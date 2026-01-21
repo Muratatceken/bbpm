@@ -105,18 +105,22 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             cos_sim_mean = cos_sim.mean().item()
 
             # Failure diagnostics (when degradation detected)
+            # Skip for very large D to avoid slowdown
             failure_diagnostics = None
-            if cos_sim_mean < 0.7:
+            if cos_sim_mean < 0.7 and D <= 2000000:  # Skip for D > 2M
                 # Get slot loads
                 slot_loads_array = slot_loads(all_indices.flatten(), D)
                 
                 # Top-10 most loaded slots
                 top_slots = occ_summary.get("top_slots", [])[:10]
                 
-                # Query hit analysis (use test keys)
-                test_keys = keys[:test_n]
-                test_indices_tensor = memory.hash_fn.indices(test_keys, K, H)
-                hit_analysis = query_hit_analysis(test_indices_tensor, slot_loads_array)
+                # Query hit analysis (use test keys, only for reasonable test sizes)
+                if test_n <= 10000:
+                    test_keys = keys[:test_n]
+                    test_indices_tensor = memory.hash_fn.indices(test_keys, K, H)
+                    hit_analysis = query_hit_analysis(test_indices_tensor, slot_loads_array)
+                else:
+                    hit_analysis = {}
                 
                 # SNR proxy
                 snr_proxy = 1.0 / np.sqrt(max(1e-9, cap_metrics["load_ratio"]))

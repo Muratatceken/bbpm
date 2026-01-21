@@ -306,8 +306,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                 p90_latency_ms = np.percentile(latencies, 90) if latencies else 0.0
 
                 # Failure diagnostics (when degradation detected)
+                # Skip for very large D or N to avoid slowdown
                 failure_diagnostics = None
-                if bbpm_acc < 0.5:
+                if bbpm_acc < 0.5 and D <= 200000 and num_queries <= 1000:
                     # Get slot loads
                     slot_loads_array = slot_loads(all_indices.flatten(), D)
                     
@@ -330,6 +331,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                     logger.info(
                         f"      Degradation detected: bbpm_acc={bbpm_acc:.4f}, "
                         f"max_load={occ_summary['max_load']}, snr_proxy={snr_proxy:.4f}"
+                    )
+                elif bbpm_acc < 0.5:
+                    # For large D/N, just log basic info
+                    snr_proxy = 1.0 / np.sqrt(max(1e-9, load_ratio))
+                    logger.info(
+                        f"      Degradation detected: bbpm_acc={bbpm_acc:.4f}, "
+                        f"max_load={occ_summary['max_load']}, snr_proxy={snr_proxy:.4f} "
+                        f"(diagnostics skipped for large D={D} or N={N})"
                     )
 
                 # Store results

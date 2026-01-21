@@ -155,17 +155,23 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                     }
 
                 # Failure diagnostics (when degradation detected)
+                # Only compute for smaller D to avoid slowdown on large arrays
                 failure_diagnostics = None
-                if bbpm_success < 0.5 or cosine_mean < 0.7:
-                    # Get slot loads
+                if (bbpm_success < 0.5 or cosine_mean < 0.7) and D <= 200000:  # Skip for very large D
+                    # Get slot loads (reuse from occupancy_summary if possible, otherwise compute)
+                    # For efficiency, only compute if needed
                     slot_loads_array = slot_loads(indices_flat, D)
                     
-                    # Top-10 most loaded slots
+                    # Top-10 most loaded slots (already in occ_summary)
                     top_slots = occ_summary.get("top_slots", [])[:10]
                     
-                    # Query hit analysis
-                    query_indices_tensor = memory.hash_fn.indices(query_keys, K, H)
-                    hit_analysis = query_hit_analysis(query_indices_tensor, slot_loads_array)
+                    # Query hit analysis (only for reasonable query counts)
+                    if test_queries <= 1000:
+                        query_indices_tensor = memory.hash_fn.indices(query_keys, K, H)
+                        hit_analysis = query_hit_analysis(query_indices_tensor, slot_loads_array)
+                    else:
+                        # Skip for large query sets to avoid slowdown
+                        hit_analysis = {}
                     
                     # SNR proxy
                     snr_proxy = 1.0 / np.sqrt(max(1e-9, load_ratio))
@@ -183,6 +189,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                     )
                     if top_slots:
                         logger.info(f"      Top loaded slots: {top_slots[:5]}")
+                elif bbpm_success < 0.5 or cosine_mean < 0.7:
+                    # For large D, just log basic info without expensive diagnostics
+                    snr_proxy = 1.0 / np.sqrt(max(1e-9, load_ratio))
+                    logger.info(
+                        f"      Degradation detected: bbpm_success={bbpm_success:.4f}, "
+                        f"cosine_mean={cosine_mean:.4f}, max_load={occ_summary['max_load']}, "
+                        f"snr_proxy={snr_proxy:.4f} (diagnostics skipped for large D={D})"
+                    )
 
                 # Store results
                 run_data = {

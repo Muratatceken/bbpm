@@ -39,6 +39,18 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         "seeds": {},
     }
 
+    # Warmup GPU (only once, before first operation)
+    if device_str == "cuda":
+        logger.info("Warming up GPU...")
+        warmup_memory = BBPMMemoryFloat(D=D, d=d, K=4, H=1, device=device_str, seed=seeds[0])
+        warmup_keys = torch.arange(100, device=device_str)
+        warmup_values = torch.randn(100, d, device=device_str)
+        warmup_values = F.normalize(warmup_values, p=2, dim=1)
+        warmup_memory.write(warmup_keys, warmup_values)
+        _ = warmup_memory.read(warmup_keys)
+        del warmup_memory
+        torch.cuda.synchronize()
+
     for seed in seeds:
         set_global_seed(seed)
         logger.info(f"Running seed={seed}")

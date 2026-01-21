@@ -108,13 +108,15 @@ def analyze(results_path: Path, outdir: Path):
             if len(capacity_units_vals) > 0:
                 w_color = window_colors[w_idx % len(window_colors)]
                 w_style = window_styles[w_idx % len(window_styles)]
+                # Matplotlib format: marker + linestyle (e.g., "o--" not "--o")
+                fmt_str = f"o{w_style}"  # marker first, then linestyle
                 if num_seeds >= 3:
                     ax1.errorbar(
                         capacity_units_vals, window_means, yerr=window_stds,
-                        fmt=f"{w_color}{w_style}o", label=f"Window (W={W:,})", linewidth=1.5, capsize=2, alpha=0.7
+                        fmt=fmt_str, color=w_color, label=f"Window (W={W:,})", linewidth=1.5, capsize=2, alpha=0.7
                     )
                 else:
-                    ax1.plot(capacity_units_vals, window_means, f"{w_color}{w_style}o", 
+                    ax1.plot(capacity_units_vals, window_means, fmt_str, color=w_color,
                            label=f"Window (W={W:,})", linewidth=1.5, alpha=0.7)
 
     # Plot oracle baseline (should be flat at 1.0)

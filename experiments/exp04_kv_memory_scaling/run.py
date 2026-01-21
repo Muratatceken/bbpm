@@ -43,19 +43,11 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         "kv_oom": None,
     }
 
-    # BBPM memory size (constant)
+    # BBPM memory size (constant) - always use analytic value
     bbpm_memory_bytes = D * d * 4  # float32 = 4 bytes
     bbpm_memory_gb = bbpm_memory_bytes / (1024 ** 3)
 
     logger.info(f"BBPM memory: {bbpm_memory_gb:.4f} GB (constant)")
-
-    # Initialize BBPM (for measurement if CUDA)
-    if device_str == "cuda" and torch.cuda.is_available():
-        bbpm = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
-        torch.cuda.reset_peak_memory_stats()
-        initial_mem = torch.cuda.memory_allocated() / (1024 ** 3)
-    else:
-        initial_mem = 0
 
     for T in context_lengths:
         logger.info(f"Testing context length T={T}")
@@ -69,16 +61,10 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         results["context_lengths"].append(T)
         results["kv_memory_gb"].append(kv_memory_gb)
 
-        # BBPM memory (constant)
-        if device_str == "cuda" and torch.cuda.is_available():
-            # Measure actual GPU memory
-            current_mem = torch.cuda.memory_allocated() / (1024 ** 3)
-            bbpm_measured = current_mem - initial_mem
-            results["bbpm_memory_gb"].append(bbpm_measured)
-        else:
-            results["bbpm_memory_gb"].append(bbpm_memory_gb)
+        # BBPM memory (constant) - always use analytic value for consistency
+        results["bbpm_memory_gb"].append(bbpm_memory_gb)
 
-        logger.info(f"T={T}: KV={kv_memory_gb:.2f} GB, BBPM={results['bbpm_memory_gb'][-1]:.4f} GB")
+        logger.info(f"T={T}: KV={kv_memory_gb:.2f} GB, BBPM={bbpm_memory_gb:.4f} GB")
 
         # Check for OOM (simulated)
         if device_str == "cuda" and torch.cuda.is_available():

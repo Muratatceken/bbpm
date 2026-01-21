@@ -180,3 +180,48 @@ class BBPMMemoryFloat(nn.Module):
             "q2_estimate": estimate_q2(indices_flat, self.D),
             "occupancy_summary": occupancy,
         }
+
+    def memory_diagnostics(self) -> Dict[str, float]:
+        """
+        Compute lightweight diagnostics from memory counts.
+
+        Optional helper that computes diagnostics from self.counts without
+        requiring keys. Useful for post-write analysis.
+
+        Returns:
+            Dictionary with:
+            - nonzero_slots: int (count of slots with count > 0)
+            - max_count: int (maximum count value)
+            - mean_count_nonzero: float (average count for nonzero slots)
+            - q2_estimate_from_counts: float (computed from counts)
+        """
+        counts_flat = self.counts.flatten()  # [D]
+        nonzero_mask = counts_flat > 0
+        nonzero_counts = counts_flat[nonzero_mask]
+
+        if len(nonzero_counts) == 0:
+            return {
+                "nonzero_slots": 0,
+                "max_count": 0,
+                "mean_count_nonzero": 0.0,
+                "q2_estimate_from_counts": 0.0,
+            }
+
+        total_writes = counts_flat.sum().item()
+        nonzero_slots = int(nonzero_mask.sum().item())
+        max_count = int(counts_flat.max().item())
+        mean_count_nonzero = float(nonzero_counts.float().mean().item())
+
+        # Q2 estimate from counts: sum((count_i / total_writes)^2) for nonzero
+        if total_writes > 0:
+            probs = nonzero_counts.float() / total_writes
+            q2_estimate_from_counts = float((probs ** 2).sum().item())
+        else:
+            q2_estimate_from_counts = 0.0
+
+        return {
+            "nonzero_slots": nonzero_slots,
+            "max_count": max_count,
+            "mean_count_nonzero": mean_count_nonzero,
+            "q2_estimate_from_counts": q2_estimate_from_counts,
+        }

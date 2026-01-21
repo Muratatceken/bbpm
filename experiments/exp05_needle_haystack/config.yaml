@@ -1,17 +1,22 @@
 # Experiment 5: Needle in a Haystack
+# Sweeps D and N to show degradation regimes
 
-D: 100000000  # Large memory
+# Memory sizes to test
+D_list: [50000, 100000, 200000, 1000000]
 d: 64
 K: 32
 H: 1
 
+# Item counts to test (will be filtered by max_N_over_D)
+N_list: [1000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000]
+max_N_over_D: 5  # Cap N ≤ 5×D for runtime
+
 # Test settings
-N_values: [1000, 5000, 10000, 20000, 50000, 100000, 500000, 1000000]
 test_queries: 100  # Number of random queries
 window_size: 1000  # Window baseline size
 
-# Reproducibility
-seed: 42
+# Reproducibility (multiple seeds for error bars)
+seeds: [0, 1, 2]
 
 # Device
 device: "auto"

@@ -91,9 +91,14 @@ def occupancy_summary(
     load_hist_bins = load_hist_bins.tolist()
     load_hist_counts = load_hist_counts.tolist()
 
-    # Q2 estimate
-    probs = hist / total_writes
-    q2_estimate = float(np.sum(probs ** 2))
+    # Q2 estimate: computed from nonzero loads only
+    # p_i = load_i / total_writes for nonzero loads, then q2 = sum(p_i^2)
+    nonzero_loads = hist[hist > 0]
+    if len(nonzero_loads) > 0:
+        probs = nonzero_loads / total_writes
+        q2_estimate = float(np.sum(probs ** 2))
+    else:
+        q2_estimate = 0.0
 
     # Collision rate (within-row duplicates)
     if indices.dim() == 2:

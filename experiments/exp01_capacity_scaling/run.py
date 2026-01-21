@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, set_global_seed
+from bbpm import BBPMMemoryFloat, get_device, occupancy_summary, set_global_seed
 from bbpm.config import load_config
 from bbpm.utils import get_logger, Timer
 
@@ -26,59 +26,76 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     item_counts = config["item_counts"]
     test_size = config["test_size"]
     batch_size = config["batch_size"]
-    seed = config["seed"]
+    seeds = config.get("seeds", [0, 1, 2])
 
-    # Setup
-    set_global_seed(seed)
     device_str = get_device(device if device != "auto" else config.get("device", "auto"))
     logger = get_logger("exp01", log_file=outdir / "log.txt")
 
     logger.info(f"Starting exp01_capacity_scaling")
-    logger.info(f"Config: D={D}, d={d}, K={K}, H={H}")
+    logger.info(f"Config: D={D}, d={d}, K={K}, H={H}, seeds={seeds}")
     logger.info(f"Device: {device_str}")
-
-    # Initialize memory
-    memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
 
     results = {
         "config": config,
-        "item_counts": [],
-        "cosine_similarities": [],
-        "metrics": [],
+        "seeds": {},
     }
 
-    for N in item_counts:
-        logger.info(f"Testing N={N}")
-        memory.clear()
+    for seed in seeds:
+        set_global_seed(seed)
+        logger.info(f"Running seed={seed}")
 
-        # Generate keys and values
-        keys = torch.arange(N, device=device_str)
-        values = torch.randn(N, d, device=device_str)
-        values = F.normalize(values, p=2, dim=1)  # Normalize to unit vectors
+        results["seeds"][f"seed_{seed}"] = {
+            "item_counts": [],
+            "cosine_similarities": [],
+            "N_over_D": [],
+            "diagnostics": [],
+        }
 
-        # Batch write
-        with Timer(f"Write {N} items"):
-            for i in range(0, N, batch_size):
-                end = min(i + batch_size, N)
-                memory.write(keys[i:end], values[i:end])
+        # Initialize memory
+        memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
 
-        # Test retrieval
-        test_n = min(test_size, N)
-        retrieved = []
-        for i in range(0, test_n, batch_size):
-            end = min(i + batch_size, test_n)
-            retrieved.append(memory.read(keys[i:end]))
+        for N in item_counts:
+            logger.info(f"  Testing N={N}")
+            memory.clear()
 
-        retrieved = torch.cat(retrieved, dim=0)
-        true_vals = values[:test_n]
+            # Generate keys and values
+            keys = torch.arange(N, device=device_str)
+            values = torch.randn(N, d, device=device_str)
+            values = F.normalize(values, p=2, dim=1)  # Normalize to unit vectors
 
-        # Compute cosine similarity
-        cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1).mean().item()
+            # Batch write
+            with Timer(f"Write {N} items"):
+                for i in range(0, N, batch_size):
+                    end = min(i + batch_size, N)
+                    memory.write(keys[i:end], values[i:end])
 
-        results["item_counts"].append(N)
-        results["cosine_similarities"].append(cos_sim)
+            # Get diagnostics
+            all_indices = memory.hash_fn.indices(keys, K, H)
+            occ_summary = occupancy_summary(all_indices.flatten(), D)
 
-        logger.info(f"N={N}: Cosine similarity = {cos_sim:.4f}")
+            # Test retrieval
+            test_n = min(test_size, N)
+            retrieved = []
+            for i in range(0, test_n, batch_size):
+                end = min(i + batch_size, test_n)
+                retrieved.append(memory.read(keys[i:end]))
+
+            retrieved = torch.cat(retrieved, dim=0)
+            true_vals = values[:test_n]
+
+            # Compute cosine similarity
+            cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1).mean().item()
+
+            results["seeds"][f"seed_{seed}"]["item_counts"].append(N)
+            results["seeds"][f"seed_{seed}"]["cosine_similarities"].append(cos_sim)
+            results["seeds"][f"seed_{seed}"]["N_over_D"].append(N / D)
+            results["seeds"][f"seed_{seed}"]["diagnostics"].append({
+                "q2_estimate": occ_summary["q2_estimate"],
+                "max_load": occ_summary["max_load"],
+                "collision_rate": occ_summary["collision_rate"],
+            })
+
+            logger.info(f"  N={N}: Cosine similarity = {cos_sim:.4f}, q2={occ_summary['q2_estimate']:.6f}")
 
     # Save results
     outdir.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash, get_device, self_collision_prob, set_global_seed
+from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash, get_device, occupancy_summary, self_collision_prob, set_global_seed
 from bbpm.config import load_config
 from bbpm.hashing.diagnostics import collision_rate, gini_load, max_load
 from bbpm.utils import get_logger, Timer
@@ -38,8 +38,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     results = {
         "config": config,
         "N_values": N_values,
-        "global": {"cosines": [], "collision_rates": [], "max_loads": [], "gini_loads": [], "self_collision_probs": []},
-        "block": {"cosines": [], "collision_rates": [], "max_loads": [], "gini_loads": [], "self_collision_probs": []},
+        "global": {"cosines": [], "collision_rates": [], "max_loads": [], "gini_loads": [], "self_collision_probs": [], "occupancy_summary": []},
+        "block": {"cosines": [], "collision_rates": [], "max_loads": [], "gini_loads": [], "self_collision_probs": [], "occupancy_summary": []},
     }
 
     # Initialize hash functions
@@ -74,12 +74,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
         # Diagnostics
         indices_global = global_hash.indices(keys[:test_n], K, H)
+        occ_summary_global = occupancy_summary(indices_global.flatten(), D)
         results["global"]["cosines"].append(cos_global)
         results["global"]["collision_rates"].append(collision_rate(indices_global))
         results["global"]["max_loads"].append(max_load(indices_global.flatten(), D))
         results["global"]["gini_loads"].append(gini_load(indices_global.flatten(), D))
         # For global hash, L = D (total memory size)
         results["global"]["self_collision_probs"].append(self_collision_prob(K, D))
+        results["global"]["occupancy_summary"].append(occ_summary_global)
 
         # Test Block Hash
         block_mem = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=block_hash, device=device_str)
@@ -98,12 +100,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         cos_block = F.cosine_similarity(retrieved_block, values[:test_n], dim=1).mean().item()
 
         indices_block = block_hash.indices(keys[:test_n], K, H)
+        occ_summary_block = occupancy_summary(indices_block.flatten(), D)
         results["block"]["cosines"].append(cos_block)
         results["block"]["collision_rates"].append(collision_rate(indices_block))
         results["block"]["max_loads"].append(max_load(indices_block.flatten(), D))
         results["block"]["gini_loads"].append(gini_load(indices_block.flatten(), D))
         # For block hash, L = block_size
         results["block"]["self_collision_probs"].append(self_collision_prob(K, block_size))
+        results["block"]["occupancy_summary"].append(occ_summary_block)
 
         logger.info(f"N={N}: Global cos={cos_global:.4f}, Block cos={cos_block:.4f}")
 

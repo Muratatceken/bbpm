@@ -13,8 +13,8 @@ item_counts: [100, 1000, 5000, 10000, 20000, 50000, 100000]
 test_size: 1000  # Number of items to test retrieval on
 batch_size: 10000  # Batch size for writes/reads
 
-# Reproducibility
-seed: 42
+# Reproducibility (multiple seeds for error bars)
+seeds: [0, 1, 2]
 
 # Device
 device: "auto"  # "cpu", "cuda", or "auto"

@@ -5,10 +5,11 @@ import json
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, set_global_seed
+from bbpm import BBPMMemoryFloat, get_device, occupancy_summary, set_global_seed
 from bbpm.config import load_config
 from bbpm.utils import get_logger
 
@@ -22,39 +23,31 @@ except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
 
-def run_experiment(config_path: Path, outdir: Path, device: str = "auto", N_override: int = None):
-    """Run LLM integration experiment with controller-based retrieval injection."""
+def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
+    """Run LLM integration experiment with stress sweep and proper timing."""
     config = load_config(config_path)
-    D = config["D"]
+    D_list = config.get("D_list", [50000, 100000, 200000])
     d_config = config.get("d", 64)  # Will be overridden by model.config.hidden_size if available
-    K = config["K"]
-    H = config["H"]
+    K_list = config.get("K_list", [4, 16, 64])
+    H_list = config.get("H_list", [1])
     model_name = config.get("model_name", "gpt2")
     window_size = config.get("window_size", 50)
-    N_values = config.get("N_values", [100, 500, 1000, 2000, 5000])
-    num_queries = config.get("num_queries", 20)
-    seed = config.get("seed", 42)
-    max_new_tokens = config.get("max_new_tokens", 20)
+    N_list = config.get("N_list", [1000, 2000, 5000, 10000, 20000])
+    num_queries = config.get("num_queries", 30)
+    seeds = config.get("seeds", [0, 1, 2])
+    max_new_tokens = config.get("max_new_tokens", 16)
 
-    if N_override is not None:
-        N_values = [N_override]
-
-    set_global_seed(seed)
     device_str = get_device(device if device != "auto" else config.get("device", "auto"))
     logger = get_logger("exp07", log_file=outdir / "log.txt")
 
     logger.info(f"Starting exp07_llm_integration")
     logger.info(f"Transformers available: {TRANSFORMERS_AVAILABLE}")
+    logger.info(f"Config: D_list={D_list}, N_list={N_list}, K_list={K_list}, seeds={seeds}")
 
     results = {
         "config": config,
         "transformers_available": TRANSFORMERS_AVAILABLE,
-        "N_values": [],
-        "bbpm_accuracy": [],
-        "baseline_accuracy": [],
-        "oracle_accuracy": [],  # Optional upper bound
-        "tokens_per_sec": [],
-        "memory_scaling": [],
+        "seeds": {},
     }
 
     if not TRANSFORMERS_AVAILABLE:
@@ -62,61 +55,62 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto", N_over
         logger.warning("This mode only tests retrieval correctness, not LLM generation.")
         
         # Synthetic mode: test retrieval correctness only
-        for N in N_values:
-            logger.info(f"Testing N={N} (synthetic mode - retrieval only)")
-            
-            # Use d from config for synthetic mode
-            d = d_config
-            memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
-            memory.clear()
-            
-            # Generate deterministic codebook
+        for seed in seeds:
             set_global_seed(seed)
-            codebook = torch.randn(N, d, device=device_str)
-            codebook = F.normalize(codebook, p=2, dim=1)
+            results["seeds"][f"seed_{seed}"] = {}
             
-            # Generate fact values
-            fact_values = [f"val_{i:05d}" for i in range(N)]
-            
-            # Write facts to BBPM: key=ID, value=codebook[ID]
-            batch_size = 100
-            fact_ids = torch.arange(N, device=device_str)
-            for i in range(0, N, batch_size):
-                end = min(i + batch_size, N)
-                keys = fact_ids[i:end]
-                values = codebook[i:end]
-                memory.write(keys, values)
-            
-            # Test queries
-            query_ids = torch.randint(0, N, (num_queries,), device=device_str)
-            correct_bbpm = 0
-            
-            for q_id in query_ids:
-                q_id_item = q_id.item()
-                
-                # BBPM retrieval
-                retrieved_emb = memory.read(q_id.unsqueeze(0))  # [1, d]
-                retrieved_emb = F.normalize(retrieved_emb, p=2, dim=1)
-                
-                # Decode: argmax(cos(v_hat, codebook))
-                similarities = torch.matmul(retrieved_emb, codebook.t())  # [1, N]
-                decoded_id = similarities.argmax().item()
-                
-                if decoded_id == q_id_item:
-                    correct_bbpm += 1
-            
-            bbpm_acc = correct_bbpm / num_queries
-            baseline_acc = 0.0  # No baseline in synthetic mode
-            oracle_acc = 1.0  # Perfect retrieval in synthetic mode
-            
-            results["N_values"].append(N)
-            results["bbpm_accuracy"].append(bbpm_acc)
-            results["baseline_accuracy"].append(baseline_acc)
-            results["oracle_accuracy"].append(oracle_acc)
-            results["tokens_per_sec"].append(0.0)
-            results["memory_scaling"].append({"bbpm": "O(1)", "prompt": "O(W)", "model": "O(1)"})
-            
-            logger.info(f"N={N}: BBPM retrieval accuracy={bbpm_acc:.4f}")
+            for D in D_list:
+                for K in K_list:
+                    for H in H_list:
+                        for N in N_list:
+                            if N > 5 * D:  # Skip if too large
+                                continue
+                                
+                            logger.info(f"Testing seed={seed}, D={D}, K={K}, H={H}, N={N} (synthetic)")
+                            
+                            d = d_config
+                            memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                            memory.clear()
+                            
+                            # Generate deterministic codebook
+                            set_global_seed(seed)
+                            codebook = torch.randn(N, d, device=device_str)
+                            codebook = F.normalize(codebook, p=2, dim=1)
+                            
+                            # Write facts to BBPM
+                            batch_size = 100
+                            fact_ids = torch.arange(N, device=device_str)
+                            for i in range(0, N, batch_size):
+                                end = min(i + batch_size, N)
+                                memory.write(fact_ids[i:end], codebook[i:end])
+                            
+                            # Get diagnostics
+                            all_indices = memory.hash_fn.indices(fact_ids, K, H)
+                            occ_summary = occupancy_summary(all_indices.flatten(), D)
+                            
+                            # Test queries
+                            query_ids = torch.randint(0, N, (num_queries,), device=device_str)
+                            correct_bbpm = 0
+                            
+                            for q_id in query_ids:
+                                retrieved_emb = memory.read(q_id.unsqueeze(0))
+                                retrieved_emb = F.normalize(retrieved_emb, p=2, dim=1)
+                                similarities = torch.matmul(retrieved_emb, codebook.t())
+                                decoded_id = similarities.argmax().item()
+                                if decoded_id == q_id.item():
+                                    correct_bbpm += 1
+                            
+                            bbpm_acc = correct_bbpm / num_queries
+                            key = f"D_{D}_K_{K}_H_{H}_N_{N}"
+                            results["seeds"][f"seed_{seed}"][key] = {
+                                "D": D, "K": K, "H": H, "N": N,
+                                "N_over_D": N / D,
+                                "load_ratio": (N * K * H) / D,
+                                "bbpm_accuracy": bbpm_acc,
+                                "q2_estimate": occ_summary["q2_estimate"],
+                                "max_load": occ_summary["max_load"],
+                                "collision_rate": occ_summary["collision_rate"],
+                            }
         
         # Save results
         outdir.mkdir(parents=True, exist_ok=True)
@@ -138,142 +132,183 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto", N_over
     except Exception as e:
         logger.error(f"Failed to load model: {e}")
         logger.error("Falling back to synthetic mode")
-        # Re-run in synthetic mode
-        run_experiment(config_path, outdir, device, N_override)
+        run_experiment(config_path, outdir, device)
         return
 
     # Override d with model's hidden size
     d = model.config.hidden_size
     logger.info(f"Using d={d} (model.config.hidden_size)")
 
-    # Initialize BBPM
-    memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
+    # Stress sweep: Fix K=16, H=1, sweep N at D=50k and D=100k; add K=64 run
+    stress_configs = [
+        (50000, 16, 1),  # D=50k, K=16, H=1
+        (100000, 16, 1),  # D=100k, K=16, H=1
+        (100000, 64, 1),  # D=100k, K=64, H=1 (collapse case)
+    ]
 
-    for N in N_values:
-        logger.info(f"Testing N={N}")
-
-        memory.clear()
-
-        # Generate deterministic codebook with fixed seed
+    for seed in seeds:
         set_global_seed(seed)
-        codebook = torch.randn(N, d, device=device_str)
-        codebook = F.normalize(codebook, p=2, dim=1)
+        logger.info(f"Running seed={seed}")
+        results["seeds"][f"seed_{seed}"] = {}
 
-        # Generate fact values: ID=<i> VALUE=<val_xxxxx>
-        fact_values = [f"val_{i:05d}" for i in range(N)]
-        fact_texts = [f"ID={i} VALUE={fact_values[i]}" for i in range(N)]
+        for D, K, H in stress_configs:
+            if D not in D_list or K not in K_list or H not in H_list:
+                continue
 
-        # Stream N facts to BBPM
-        start_time = time.time()
-        batch_size = 100
-        fact_ids = torch.arange(N, device=device_str)
-        
-        for i in range(0, N, batch_size):
-            end = min(i + batch_size, N)
-            keys = fact_ids[i:end]
-            # Write codebook vectors as values
-            values = codebook[i:end]
-            memory.write(keys, values)
+            logger.info(f"  Testing D={D}, K={K}, H={H}")
 
-        elapsed = time.time() - start_time
-        tokens_per_sec = N / elapsed if elapsed > 0 else 0
+            for N in N_list:
+                if N > 5 * D:  # Skip if too large
+                    continue
 
-        # Test queries
-        query_ids = torch.randint(0, N, (num_queries,), device=device_str)
-        correct_bbpm = 0
-        correct_baseline = 0
-        correct_oracle = 0
+                logger.info(f"    Testing N={N} (N/D={N/D:.4f})")
 
-        for q_id in query_ids:
-            q_id_item = q_id.item()
-            target_value = fact_values[q_id_item]
+                # Create fresh memory
+                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                memory.clear()
 
-            # Build baseline prompt: last W facts + question
-            window_facts = fact_texts[max(0, N - window_size):]
-            baseline_prompt = "\n".join(window_facts)
-            baseline_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+                # Generate deterministic codebook
+                set_global_seed(seed)
+                codebook = torch.randn(N, d, device=device_str)
+                codebook = F.normalize(codebook, p=2, dim=1)
 
-            # BBPM retrieval
-            retrieved_emb = memory.read(q_id.unsqueeze(0))  # [1, d]
-            retrieved_emb = F.normalize(retrieved_emb, p=2, dim=1)
+                # Generate fact values
+                fact_values = [f"val_{i:05d}" for i in range(N)]
+                fact_texts = [f"ID={i} VALUE={fact_values[i]}" for i in range(N)]
 
-            # Decode: argmax(cos(v_hat, codebook))
-            similarities = torch.matmul(retrieved_emb, codebook.t())  # [1, N]
-            decoded_id = similarities.argmax().item()
-            retrieved_fact_text = fact_texts[decoded_id]
+                # Write facts to BBPM
+                batch_size = 100
+                fact_ids = torch.arange(N, device=device_str)
+                for i in range(0, N, batch_size):
+                    end = min(i + batch_size, N)
+                    memory.write(fact_ids[i:end], codebook[i:end])
 
-            # Build BBPM prompt: last W facts + Retrieved fact + question
-            bbpm_prompt = "\n".join(window_facts)
-            bbpm_prompt += f"\nRetrieved: {retrieved_fact_text}"
-            bbpm_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+                # Get diagnostics
+                all_indices = memory.hash_fn.indices(fact_ids, K, H)
+                occ_summary = occupancy_summary(all_indices.flatten(), D)
+                load_ratio = (N * K * H) / D
+                N_over_D = N / D
 
-            # Oracle prompt: inject true fact (upper bound)
-            oracle_prompt = "\n".join(window_facts)
-            oracle_prompt += f"\nRetrieved: {fact_texts[q_id_item]}"
-            oracle_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+                # Test queries with proper timing
+                query_ids = torch.randint(0, N, (num_queries,), device=device_str)
+                correct_bbpm = 0
+                correct_baseline = 0
+                correct_oracle = 0
+                latencies = []
+                total_generated_tokens = 0
+                total_time = 0.0
 
-            # Generate with model
-            with torch.no_grad():
-                # Baseline
-                baseline_tokens = tokenizer(baseline_prompt, return_tensors="pt").to(device_str)
-                baseline_output = model.generate(
-                    **baseline_tokens,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id,
+                for q_id in query_ids:
+                    q_id_item = q_id.item()
+                    target_value = fact_values[q_id_item]
+
+                    # Build prompts
+                    window_facts = fact_texts[max(0, N - window_size):]
+                    baseline_prompt = "\n".join(window_facts)
+                    baseline_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+
+                    # BBPM retrieval
+                    retrieved_emb = memory.read(q_id.unsqueeze(0))
+                    retrieved_emb = F.normalize(retrieved_emb, p=2, dim=1)
+                    similarities = torch.matmul(retrieved_emb, codebook.t())
+                    decoded_id = similarities.argmax().item()
+                    retrieved_fact_text = fact_texts[decoded_id]
+
+                    bbpm_prompt = "\n".join(window_facts)
+                    bbpm_prompt += f"\nRetrieved: {retrieved_fact_text}"
+                    bbpm_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+
+                    oracle_prompt = "\n".join(window_facts)
+                    oracle_prompt += f"\nRetrieved: {fact_texts[q_id_item]}"
+                    oracle_prompt += f"\nQuestion: What is VALUE for ID={q_id_item}? Answer:"
+
+                    # Generate with proper timing (ONLY generation time)
+                    with torch.no_grad():
+                        # BBPM (main timing measurement)
+                        bbpm_tokens = tokenizer(bbpm_prompt, return_tensors="pt").to(device_str)
+                        input_ids = bbpm_tokens["input_ids"]
+                        
+                        t0 = time.perf_counter()
+                        bbpm_output = model.generate(
+                            **bbpm_tokens,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            temperature=0.0,
+                            pad_token_id=tokenizer.pad_token_id,
+                        )
+                        t1 = time.perf_counter()
+                        
+                        gen_len = bbpm_output.shape[1] - input_ids.shape[1]
+                        latencies.append((t1 - t0) * 1000)  # ms
+                        total_generated_tokens += gen_len
+                        total_time += (t1 - t0)
+                        
+                        bbpm_text = tokenizer.decode(bbpm_output[0], skip_special_tokens=True)
+
+                        # Baseline
+                        baseline_tokens = tokenizer(baseline_prompt, return_tensors="pt").to(device_str)
+                        baseline_output = model.generate(
+                            **baseline_tokens,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            temperature=0.0,
+                            pad_token_id=tokenizer.pad_token_id,
+                        )
+                        baseline_text = tokenizer.decode(baseline_output[0], skip_special_tokens=True)
+
+                        # Oracle
+                        oracle_tokens = tokenizer(oracle_prompt, return_tensors="pt").to(device_str)
+                        oracle_output = model.generate(
+                            **oracle_tokens,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=False,
+                            temperature=0.0,
+                            pad_token_id=tokenizer.pad_token_id,
+                        )
+                        oracle_text = tokenizer.decode(oracle_output[0], skip_special_tokens=True)
+
+                    # Score success
+                    if target_value in baseline_text:
+                        correct_baseline += 1
+                    if target_value in bbpm_text:
+                        correct_bbpm += 1
+                    if target_value in oracle_text:
+                        correct_oracle += 1
+
+                bbpm_acc = correct_bbpm / num_queries
+                baseline_acc = correct_baseline / num_queries
+                oracle_acc = correct_oracle / num_queries
+
+                # Compute timing stats
+                tokens_per_sec = total_generated_tokens / total_time if total_time > 0 else 0.0
+                median_latency_ms = np.median(latencies) if latencies else 0.0
+                p90_latency_ms = np.percentile(latencies, 90) if latencies else 0.0
+
+                # Store results
+                key = f"D_{D}_K_{K}_H_{H}_N_{N}"
+                results["seeds"][f"seed_{seed}"][key] = {
+                    "D": D,
+                    "K": K,
+                    "H": H,
+                    "N": N,
+                    "N_over_D": N_over_D,
+                    "load_ratio": load_ratio,
+                    "bbpm_accuracy": bbpm_acc,
+                    "baseline_accuracy": baseline_acc,
+                    "oracle_accuracy": oracle_acc,
+                    "tokens_per_sec": tokens_per_sec,
+                    "median_latency_ms": median_latency_ms,
+                    "p90_latency_ms": p90_latency_ms,
+                    "q2_estimate": occ_summary["q2_estimate"],
+                    "max_load": occ_summary["max_load"],
+                    "collision_rate": occ_summary["collision_rate"],
+                }
+
+                logger.info(
+                    f"      N={N}: BBPM={bbpm_acc:.4f}, Baseline={baseline_acc:.4f}, "
+                    f"Oracle={oracle_acc:.4f}, Tokens/sec={tokens_per_sec:.2f}, "
+                    f"q2={occ_summary['q2_estimate']:.6f}"
                 )
-                baseline_text = tokenizer.decode(baseline_output[0], skip_special_tokens=True)
-
-                # BBPM
-                bbpm_tokens = tokenizer(bbpm_prompt, return_tensors="pt").to(device_str)
-                bbpm_output = model.generate(
-                    **bbpm_tokens,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
-                bbpm_text = tokenizer.decode(bbpm_output[0], skip_special_tokens=True)
-
-                # Oracle
-                oracle_tokens = tokenizer(oracle_prompt, return_tensors="pt").to(device_str)
-                oracle_output = model.generate(
-                    **oracle_tokens,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
-                oracle_text = tokenizer.decode(oracle_output[0], skip_special_tokens=True)
-
-            # Score success: correct if output contains target_value as substring
-            if target_value in baseline_text:
-                correct_baseline += 1
-            if target_value in bbpm_text:
-                correct_bbpm += 1
-            if target_value in oracle_text:
-                correct_oracle += 1
-
-        bbpm_acc = correct_bbpm / num_queries
-        baseline_acc = correct_baseline / num_queries
-        oracle_acc = correct_oracle / num_queries
-
-        # Memory scaling: analytic estimate
-        memory_scaling = {
-            "bbpm": "O(1) constant",
-            "prompt": f"O(W={window_size}) window",
-            "model": "O(1) constant",
-        }
-
-        results["N_values"].append(N)
-        results["bbpm_accuracy"].append(bbpm_acc)
-        results["baseline_accuracy"].append(baseline_acc)
-        results["oracle_accuracy"].append(oracle_acc)
-        results["tokens_per_sec"].append(tokens_per_sec)
-        results["memory_scaling"].append(memory_scaling)
-
-        logger.info(
-            f"N={N}: BBPM={bbpm_acc:.4f}, Baseline={baseline_acc:.4f}, "
-            f"Oracle={oracle_acc:.4f}, Tokens/sec={tokens_per_sec:.2f}"
-        )
 
     # Save results
     outdir.mkdir(parents=True, exist_ok=True)
@@ -288,7 +323,6 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=Path, default=Path(__file__).parent / "config.yaml")
     parser.add_argument("--outdir", type=Path, default=PROJECT_ROOT / "results" / "exp07_llm_integration")
     parser.add_argument("--device", type=str, default="auto", choices=["cpu", "cuda", "auto"])
-    parser.add_argument("--N", type=int, default=None, help="Override N_values with single value")
 
     args = parser.parse_args()
-    run_experiment(args.config, args.outdir, args.device, args.N)
+    run_experiment(args.config, args.outdir, args.device)

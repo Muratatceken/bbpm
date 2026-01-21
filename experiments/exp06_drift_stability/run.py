@@ -60,6 +60,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     drifting_x = stable_x.clone()
     drifting_value = torch.randn(1, d, device=device_str)
     drifting_value = F.normalize(drifting_value, p=2, dim=1)
+    # Store original drifting key (for querying)
+    original_drifting_key = (proj(drifting_x.detach()).sum() * 1000).long() % (2 ** 31)
 
     for step in range(num_steps):
         memory.clear()
@@ -67,10 +69,13 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         # Write stable key
         memory.write(stable_key.unsqueeze(0), stable_value)
 
-        # Write drifting key (update x with noise)
+        # Write drifting key with CURRENT (updated) key
+        # Update x with noise
         drifting_x = drifting_x + drift_noise_scale * torch.randn_like(drifting_x)
         drifting_x = F.normalize(drifting_x, p=2, dim=1)
-        drifting_key = (proj(drifting_x.detach()).sum() * 1000).long() % (2 ** 31)
+        current_drifting_key = (proj(drifting_x.detach()).sum() * 1000).long() % (2 ** 31)
+        # Write with current key
+        memory.write(current_drifting_key.unsqueeze(0), drifting_value)
 
         # Write some other keys for noise
         noise_keys = torch.randint(0, D, (test_size,), device=device_str)
@@ -82,13 +87,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             memory.write(noise_keys[i:end], noise_values[i:end])
 
         # Test retrieval
-        # Stable key
+        # Stable key: query with original key, compare to original value
         retrieved_stable = memory.read(stable_key.unsqueeze(0))
         stable_acc = F.cosine_similarity(retrieved_stable, stable_value, dim=1).item()
 
-        # Drifting key (use original value for comparison)
-        retrieved_drifting = memory.read(drifting_key.unsqueeze(0))
-        # Compare to original drifting value (before drift)
+        # Drifting key: query with ORIGINAL key (tests drift tolerance)
+        # This tests if BBPM can retrieve the value even when the key embedding has drifted
+        retrieved_drifting = memory.read(original_drifting_key.unsqueeze(0))
+        # Compare to original drifting value
         drifting_acc = F.cosine_similarity(retrieved_drifting, drifting_value, dim=1).item()
 
         results["steps"].append(step)

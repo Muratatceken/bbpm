@@ -4,10 +4,12 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, occupancy_summary, set_global_seed
+from bbpm import BBPMMemoryFloat, compute_capacity_metrics, get_device, occupancy_summary, query_hit_analysis, set_global_seed
+from bbpm.hashing.diagnostics import slot_loads
 from bbpm.config import load_config
 from bbpm.utils import get_logger, Timer
 
@@ -64,7 +66,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             values = F.normalize(values, p=2, dim=1)  # Normalize to unit vectors
 
             # Batch write
-            with Timer(f"Write {N} items"):
+            with Timer(f"Write {N} items", device=device_str):
                 for i in range(0, N, batch_size):
                     end = min(i + batch_size, N)
                     memory.write(keys[i:end], values[i:end])
@@ -72,6 +74,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             # Get diagnostics
             all_indices = memory.hash_fn.indices(keys, K, H)
             occ_summary = occupancy_summary(all_indices.flatten(), D)
+
+            # Compute capacity metrics
+            cap_metrics = compute_capacity_metrics(N, D, K, H)
 
             # Test retrieval
             test_n = min(test_size, N)
@@ -84,18 +89,58 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             true_vals = values[:test_n]
 
             # Compute cosine similarity
-            cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1).mean().item()
+            cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1)
+            cos_sim_mean = cos_sim.mean().item()
 
-            results["seeds"][f"seed_{seed}"]["item_counts"].append(N)
-            results["seeds"][f"seed_{seed}"]["cosine_similarities"].append(cos_sim)
-            results["seeds"][f"seed_{seed}"]["N_over_D"].append(N / D)
-            results["seeds"][f"seed_{seed}"]["diagnostics"].append({
+            # Failure diagnostics (when degradation detected)
+            failure_diagnostics = None
+            if cos_sim_mean < 0.7:
+                # Get slot loads
+                slot_loads_array = slot_loads(all_indices.flatten(), D)
+                
+                # Top-10 most loaded slots
+                top_slots = occ_summary.get("top_slots", [])[:10]
+                
+                # Query hit analysis (use test keys)
+                test_keys = keys[:test_n]
+                test_indices_tensor = memory.hash_fn.indices(test_keys, K, H)
+                hit_analysis = query_hit_analysis(test_indices_tensor, slot_loads_array)
+                
+                # SNR proxy
+                snr_proxy = 1.0 / np.sqrt(max(1e-9, cap_metrics["load_ratio"]))
+                
+                failure_diagnostics = {
+                    "top_10_slots": top_slots,
+                    "query_hit_analysis": hit_analysis,
+                    "snr_proxy": float(snr_proxy),
+                }
+                
+                logger.info(
+                    f"  Degradation detected: cosine={cos_sim_mean:.4f}, "
+                    f"max_load={occ_summary['max_load']}, snr_proxy={snr_proxy:.4f}"
+                )
+
+            diagnostics_dict = {
                 "q2_estimate": occ_summary["q2_estimate"],
                 "max_load": occ_summary["max_load"],
                 "collision_rate": occ_summary["collision_rate"],
-            })
+                "load_ratio": cap_metrics["load_ratio"],
+                "capacity_units": cap_metrics["capacity_units"],
+                "effective_capacity": cap_metrics["effective_capacity"],
+            }
+            if failure_diagnostics is not None:
+                diagnostics_dict["failure_diagnostics"] = failure_diagnostics
 
-            logger.info(f"  N={N}: Cosine similarity = {cos_sim:.4f}, q2={occ_summary['q2_estimate']:.6f}")
+            results["seeds"][f"seed_{seed}"]["item_counts"].append(N)
+            results["seeds"][f"seed_{seed}"]["cosine_similarities"].append(cos_sim_mean)
+            results["seeds"][f"seed_{seed}"]["N_over_D"].append(N / D)
+            results["seeds"][f"seed_{seed}"]["diagnostics"].append(diagnostics_dict)
+
+            logger.info(
+                f"  N={N}: Cosine similarity = {cos_sim_mean:.4f}, "
+                f"capacity_units={cap_metrics['capacity_units']:.4f}, "
+                f"q2={occ_summary['q2_estimate']:.6f}"
+            )
 
     # Save results
     outdir.mkdir(parents=True, exist_ok=True)

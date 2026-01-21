@@ -58,7 +58,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         global_mem = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=global_hash, device=device_str)
         global_mem.clear()
 
-        with Timer(f"Global write N={N}"):
+        with Timer(f"Global write N={N}", device=device_str):
             for i in range(0, N, batch_size):
                 end = min(i + batch_size, N)
                 global_mem.write(keys[i:end], values[i:end])
@@ -87,7 +87,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         block_mem = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=block_hash, device=device_str)
         block_mem.clear()
 
-        with Timer(f"Block write N={N}"):
+        with Timer(f"Block write N={N}", device=device_str):
             for i in range(0, N, batch_size):
                 end = min(i + batch_size, N)
                 block_mem.write(keys[i:end], values[i:end])

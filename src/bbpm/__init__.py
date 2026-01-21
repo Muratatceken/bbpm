@@ -7,11 +7,13 @@ from .hashing import (
     HashFunction,
     MultiHashWrapper,
     collision_rate,
+    compute_capacity_metrics,
     estimate_q2,
     gini_load,
     gini_of_load,
     max_load,
     occupancy_summary,
+    query_hit_analysis,
     self_collision_prob,
 )
 from .memory import BBPMMemoryFloat, BaseMemory
@@ -38,6 +40,8 @@ __all__ = [
     "collision_rate",
     "estimate_q2",
     "self_collision_prob",
+    "compute_capacity_metrics",
+    "query_hit_analysis",
     # Utils
     "set_global_seed",
     "get_logger",

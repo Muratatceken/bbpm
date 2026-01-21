@@ -9,7 +9,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, occupancy_summary, set_global_seed
+from bbpm import BBPMMemoryFloat, compute_capacity_metrics, get_device, occupancy_summary, query_hit_analysis, set_global_seed
+from bbpm.hashing.diagnostics import slot_loads
 from bbpm.config import load_config
 from bbpm.utils import get_logger
 
@@ -186,7 +187,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                 # Get diagnostics
                 all_indices = memory.hash_fn.indices(fact_ids, K, H)
                 occ_summary = occupancy_summary(all_indices.flatten(), D)
-                load_ratio = (N * K * H) / D
+                cap_metrics = compute_capacity_metrics(N, D, K, H)
+                load_ratio = cap_metrics["load_ratio"]
+                capacity_units = cap_metrics["capacity_units"]
                 N_over_D = N / D
 
                 # Test queries with proper timing
@@ -228,6 +231,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                         bbpm_tokens = tokenizer(bbpm_prompt, return_tensors="pt").to(device_str)
                         input_ids = bbpm_tokens["input_ids"]
                         
+                        # Synchronize CUDA before timing
+                        if device_str == "cuda":
+                            torch.cuda.synchronize()
                         t0 = time.perf_counter()
                         bbpm_output = model.generate(
                             **bbpm_tokens,
@@ -236,6 +242,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                             temperature=0.0,
                             pad_token_id=tokenizer.pad_token_id,
                         )
+                        # Synchronize CUDA after generation
+                        if device_str == "cuda":
+                            torch.cuda.synchronize()
                         t1 = time.perf_counter()
                         
                         gen_len = bbpm_output.shape[1] - input_ids.shape[1]
@@ -284,15 +293,44 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                 median_latency_ms = np.median(latencies) if latencies else 0.0
                 p90_latency_ms = np.percentile(latencies, 90) if latencies else 0.0
 
+                # Failure diagnostics (when degradation detected)
+                failure_diagnostics = None
+                if bbpm_acc < 0.5:
+                    # Get slot loads
+                    slot_loads_array = slot_loads(all_indices.flatten(), D)
+                    
+                    # Top-10 most loaded slots
+                    top_slots = occ_summary.get("top_slots", [])[:10]
+                    
+                    # Query hit analysis
+                    query_indices_tensor = memory.hash_fn.indices(query_ids, K, H)
+                    hit_analysis = query_hit_analysis(query_indices_tensor, slot_loads_array)
+                    
+                    # SNR proxy
+                    snr_proxy = 1.0 / np.sqrt(max(1e-9, load_ratio))
+                    
+                    failure_diagnostics = {
+                        "top_10_slots": top_slots,
+                        "query_hit_analysis": hit_analysis,
+                        "snr_proxy": float(snr_proxy),
+                    }
+                    
+                    logger.info(
+                        f"      Degradation detected: bbpm_acc={bbpm_acc:.4f}, "
+                        f"max_load={occ_summary['max_load']}, snr_proxy={snr_proxy:.4f}"
+                    )
+
                 # Store results
                 key = f"D_{D}_K_{K}_H_{H}_N_{N}"
-                results["seeds"][f"seed_{seed}"][key] = {
+                result_dict = {
                     "D": D,
                     "K": K,
                     "H": H,
                     "N": N,
                     "N_over_D": N_over_D,
                     "load_ratio": load_ratio,
+                    "capacity_units": capacity_units,
+                    "effective_capacity": cap_metrics["effective_capacity"],
                     "bbpm_accuracy": bbpm_acc,
                     "baseline_accuracy": baseline_acc,
                     "oracle_accuracy": oracle_acc,
@@ -303,6 +341,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                     "max_load": occ_summary["max_load"],
                     "collision_rate": occ_summary["collision_rate"],
                 }
+                if failure_diagnostics is not None:
+                    result_dict["failure_diagnostics"] = failure_diagnostics
+                results["seeds"][f"seed_{seed}"][key] = result_dict
 
                 logger.info(
                     f"      N={N}: BBPM={bbpm_acc:.4f}, Baseline={baseline_acc:.4f}, "

@@ -4,10 +4,12 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, occupancy_summary, set_global_seed
+from bbpm import BBPMMemoryFloat, compute_capacity_metrics, get_device, occupancy_summary, query_hit_analysis, set_global_seed
+from bbpm.hashing.diagnostics import slot_loads
 from bbpm.config import load_config
 from bbpm.utils import get_logger, Timer
 
@@ -25,7 +27,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     N_list = config["N_list"]
     max_N_over_D = config["max_N_over_D"]
     test_queries = config["test_queries"]
-    window_size = config["window_size"]
+    window_size = config.get("window_size", 1000)  # Default for backward compatibility
+    window_sizes = config.get("window_sizes", [256, 1000, 4000, 16000])
+    cosine_threshold = config.get("cosine_threshold", 0.7)
     seeds = config["seeds"]
 
     device_str = get_device(device if device != "auto" else config.get("device", "auto"))
@@ -70,7 +74,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
                 # Write all pairs
                 batch_size = 10000
-                with Timer(f"Write {N} pairs"):
+                with Timer(f"Write {N} pairs", device=device_str):
                     for i in range(0, N, batch_size):
                         end = min(i + batch_size, N)
                         memory.write(keys[i:end], values[i:end])
@@ -81,7 +85,9 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
                 # Compute diagnostics
                 occ_summary = occupancy_summary(indices_flat, D)
-                load_ratio = (N * K * H) / D
+                cap_metrics = compute_capacity_metrics(N, D, K, H)
+                load_ratio = cap_metrics["load_ratio"]
+                capacity_units = cap_metrics["capacity_units"]
                 N_over_D = N / D
 
                 # Query uniformly sampled IDs from [0, N)
@@ -97,26 +103,98 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
                 retrieved = torch.cat(retrieved, dim=0)
                 cos_sim = F.cosine_similarity(retrieved, query_values, dim=1)
-                bbpm_success = (cos_sim > 0.9).float().mean().item()
+                cos_sim_np = cos_sim.cpu().numpy()
+                bbpm_success = (cos_sim > cosine_threshold).float().mean().item()
                 cosine_mean = cos_sim.mean().item()
 
-                # Window baseline (only remembers last W items)
+                # Multiple window baselines (only remembers last W items)
                 # Success = 1 if queried ID in [N-W, N) else 0
-                window_success = (query_indices >= (N - window_size)).float().mean().item()
+                window_successes = {}
+                for W in window_sizes:
+                    if W < N:  # Skip if W >= N (would be trivial 1.0)
+                        window_successes[f"window_success_W_{W}"] = (
+                            (query_indices >= (N - W)).float().mean().item()
+                        )
+
+                # Oracle baseline (hash-table perfect map)
+                oracle_map = {int(key.item()): value.cpu() for key, value in zip(keys, values)}
+                oracle_correct = 0
+                for q_idx, q_key in enumerate(query_keys):
+                    q_key_int = int(q_key.item())
+                    if q_key_int in oracle_map:
+                        oracle_correct += 1
+                oracle_success = oracle_correct / test_queries if test_queries > 0 else 0.0
+
+                # Cosine similarity histogram for representative load ratios
+                # Save histogram for capacity_units near {0.1, 0.5, 1.0, 2.0}
+                cosine_hist = None
+                representative_cap_units = [0.1, 0.5, 1.0, 2.0]
+                save_hist = False
+                for rep_cap in representative_cap_units:
+                    if abs(capacity_units - rep_cap) < 0.05:  # Within 5% of representative point
+                        save_hist = True
+                        break
+
+                if save_hist:
+                    hist_counts, hist_bins = np.histogram(cos_sim_np, bins=30, range=(0.0, 1.0))
+                    cosine_hist = {
+                        "bins": hist_bins.tolist(),
+                        "counts": hist_counts.tolist(),
+                    }
+
+                # Failure diagnostics (when degradation detected)
+                failure_diagnostics = None
+                if bbpm_success < 0.5 or cosine_mean < 0.7:
+                    # Get slot loads
+                    slot_loads_array = slot_loads(indices_flat, D)
+                    
+                    # Top-10 most loaded slots
+                    top_slots = occ_summary.get("top_slots", [])[:10]
+                    
+                    # Query hit analysis
+                    query_indices_tensor = memory.hash_fn.indices(query_keys, K, H)
+                    hit_analysis = query_hit_analysis(query_indices_tensor, slot_loads_array)
+                    
+                    # SNR proxy
+                    snr_proxy = 1.0 / np.sqrt(max(1e-9, load_ratio))
+                    
+                    failure_diagnostics = {
+                        "top_10_slots": top_slots,
+                        "query_hit_analysis": hit_analysis,
+                        "snr_proxy": float(snr_proxy),
+                    }
+                    
+                    logger.info(
+                        f"      Degradation detected: bbpm_success={bbpm_success:.4f}, "
+                        f"cosine_mean={cosine_mean:.4f}, max_load={occ_summary['max_load']}, "
+                        f"snr_proxy={snr_proxy:.4f}"
+                    )
+                    if top_slots:
+                        logger.info(f"      Top loaded slots: {top_slots[:5]}")
 
                 # Store results
                 run_data = {
                     "N": N,
                     "N_over_D": N_over_D,
                     "load_ratio": load_ratio,
+                    "capacity_units": capacity_units,
+                    "effective_capacity": cap_metrics["effective_capacity"],
                     "bbpm_success": bbpm_success,
                     "cosine_mean": cosine_mean,
-                    "window_success": window_success,
+                    "oracle_success": oracle_success,
                     "q2_estimate": occ_summary["q2_estimate"],
                     "max_load": occ_summary["max_load"],
                     "collision_rate": occ_summary["collision_rate"],
                     "unique_slots_touched": occ_summary["unique_slots_touched"],
                 }
+                # Add window successes
+                run_data.update(window_successes)
+                # Add cosine histogram if computed
+                if cosine_hist is not None:
+                    run_data["cosine_hist"] = cosine_hist
+                # Add failure diagnostics if computed
+                if failure_diagnostics is not None:
+                    run_data["failure_diagnostics"] = failure_diagnostics
 
                 results["seeds"][f"seed_{seed}"][f"D_{D}"]["runs"].append(run_data)
 

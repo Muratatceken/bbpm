@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, get_device, self_collision_prob, set_global_seed
+from bbpm import BBPMMemoryFloat, compute_capacity_metrics, get_device, occupancy_summary, self_collision_prob, set_global_seed
 from bbpm.config import load_config
 from bbpm.utils import get_logger, Timer
 
@@ -26,71 +26,90 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     test_size = config["test_size"]
     batch_size = config["batch_size"]
     threshold = config["cosine_threshold"]
-    seed = config["seed"]
+    seeds = config.get("seeds", [config.get("seed", 42)])
 
-    set_global_seed(seed)
     device_str = get_device(device if device != "auto" else config.get("device", "auto"))
     logger = get_logger("exp02", log_file=outdir / "log.txt")
 
     logger.info(f"Starting exp02_ablation_K_H")
-    logger.info(f"Config: D={D}, d={d}, N={N}")
+    logger.info(f"Config: D={D}, d={d}, N={N}, seeds={seeds}")
 
     results = {
         "config": config,
-        "results": {},
+        "seeds": {},
     }
 
-    for H in H_values:
-        accuracies = []
-        avg_cosines = []
-        self_collision_probs = []
+    for seed in seeds:
+        set_global_seed(seed)
+        logger.info(f"Running seed={seed}")
 
-        for K in K_values:
-            logger.info(f"Testing H={H}, K={K}")
+        results["seeds"][f"seed_{seed}"] = {}
 
-            memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
-            memory.clear()
+        for H in H_values:
+            results["seeds"][f"seed_{seed}"][f"H_{H}"] = {
+                "K_values": [],
+                "accuracies": [],
+                "avg_cosines": [],
+                "self_collision_probs": [],
+                "capacity_units": [],
+                "load_ratios": [],
+                "effective_capacities": [],
+                "occupancy_summaries": [],
+            }
 
-            # Generate data
-            keys = torch.arange(N, device=device_str)
-            values = torch.randn(N, d, device=device_str)
-            values = F.normalize(values, p=2, dim=1)
+            for K in K_values:
+                logger.info(f"  Testing H={H}, K={K}")
 
-            # Write
-            with Timer(f"Write N={N} with K={K}, H={H}"):
-                for i in range(0, N, batch_size):
-                    end = min(i + batch_size, N)
-                    memory.write(keys[i:end], values[i:end])
+                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                memory.clear()
 
-            # Test
-            test_n = min(test_size, N)
-            retrieved = []
-            for i in range(0, test_n, batch_size):
-                end = min(i + batch_size, test_n)
-                retrieved.append(memory.read(keys[i:end]))
+                # Generate data
+                keys = torch.arange(N, device=device_str)
+                values = torch.randn(N, d, device=device_str)
+                values = F.normalize(values, p=2, dim=1)
 
-            retrieved = torch.cat(retrieved, dim=0)
-            true_vals = values[:test_n]
+                # Write
+                with Timer(f"Write N={N} with K={K}, H={H}", device=device_str):
+                    for i in range(0, N, batch_size):
+                        end = min(i + batch_size, N)
+                        memory.write(keys[i:end], values[i:end])
 
-            # Compute metrics
-            cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1)
-            avg_cosine = cos_sim.mean().item()
-            accuracy = (cos_sim > threshold).float().mean().item()
+                # Get diagnostics
+                all_indices = memory.hash_fn.indices(keys, K, H)
+                occ_summary = occupancy_summary(all_indices.flatten(), D)
+                cap_metrics = compute_capacity_metrics(N, D, K, H)
 
-            accuracies.append(accuracy)
-            avg_cosines.append(avg_cosine)
-            
-            # Compute self-collision probability (for global hash, L = D)
-            self_coll_prob = self_collision_prob(K, D)
-            self_collision_probs.append(self_coll_prob)
+                # Test
+                test_n = min(test_size, N)
+                retrieved = []
+                for i in range(0, test_n, batch_size):
+                    end = min(i + batch_size, test_n)
+                    retrieved.append(memory.read(keys[i:end]))
 
-            logger.info(f"H={H}, K={K}: Accuracy={accuracy:.4f}, AvgCos={avg_cosine:.4f}, SelfCollProb={self_coll_prob:.6f}")
+                retrieved = torch.cat(retrieved, dim=0)
+                true_vals = values[:test_n]
 
-        results["results"][f"H={H}"] = {
-            "accuracies": accuracies,
-            "avg_cosines": avg_cosines,
-            "self_collision_probs": self_collision_probs,
-        }
+                # Compute metrics
+                cos_sim = F.cosine_similarity(retrieved, true_vals, dim=1)
+                avg_cosine = cos_sim.mean().item()
+                accuracy = (cos_sim > threshold).float().mean().item()
+
+                # Compute self-collision probability (for global hash, L = D)
+                self_coll_prob = self_collision_prob(K, D)
+
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["K_values"].append(K)
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["accuracies"].append(accuracy)
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["avg_cosines"].append(avg_cosine)
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["self_collision_probs"].append(self_coll_prob)
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["capacity_units"].append(cap_metrics["capacity_units"])
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["load_ratios"].append(cap_metrics["load_ratio"])
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["effective_capacities"].append(cap_metrics["effective_capacity"])
+                results["seeds"][f"seed_{seed}"][f"H_{H}"]["occupancy_summaries"].append(occ_summary)
+
+                logger.info(
+                    f"  H={H}, K={K}: Accuracy={accuracy:.4f}, AvgCos={avg_cosine:.4f}, "
+                    f"CapacityUnits={cap_metrics['capacity_units']:.4f}, SelfCollProb={self_coll_prob:.6f}"
+                )
 
     results["K_values"] = K_values
     results["H_values"] = H_values

@@ -300,3 +300,76 @@ def estimate_q2(indices: torch.Tensor, D: int) -> float:
     q2 = np.sum(probs ** 2)
 
     return float(q2)
+
+
+def compute_capacity_metrics(N: int, D: int, K: int, H: int) -> Dict[str, float]:
+    """
+    Compute capacity-normalized metrics for BBPM.
+
+    These metrics align with theoretical capacity scaling: N* ≈ D/(K·H).
+
+    Args:
+        N: Number of items stored
+        D: Total number of memory slots
+        K: Number of hash slots per key
+        H: Number of independent hash functions (heads)
+
+    Returns:
+        Dictionary with:
+        - load_ratio: (N * K * H) / D (total writes normalized by capacity)
+        - capacity_units: N / (D / (K * H)) = (N * K * H) / D = load_ratio
+        - effective_capacity: D / (K * H) (theoretical capacity)
+    """
+    effective_capacity = D / (K * H) if (K * H) > 0 else float("inf")
+    load_ratio = (N * K * H) / D if D > 0 else 0.0
+    capacity_units = N / effective_capacity if effective_capacity > 0 else 0.0
+
+    return {
+        "load_ratio": float(load_ratio),
+        "capacity_units": float(capacity_units),
+        "effective_capacity": float(effective_capacity),
+    }
+
+
+def query_hit_analysis(
+    indices_queries: torch.Tensor, slot_loads: np.ndarray, thresholds: List[int] = [2, 4, 8, 16]
+) -> Dict[str, float]:
+    """
+    Analyze query hit patterns against slot load thresholds.
+
+    For each query's indices, checks if any slot has load > threshold.
+    Returns fractions of queries that hit overloaded slots.
+
+    Args:
+        indices_queries: Tensor of shape [B, K*H] or [B*K*H] with query indices
+        slot_loads: Array of shape [D] with load per slot
+        thresholds: List of load thresholds to check
+
+    Returns:
+        Dictionary with fraction_hit_load_gt_{threshold} for each threshold
+    """
+    if indices_queries.dim() == 2:
+        # [B, K*H] -> flatten per query
+        indices_flat = indices_queries.flatten(1)  # [B, K*H]
+    else:
+        # Already flat, reshape to [B, K*H] assuming we know K*H
+        # For now, treat as single query
+        indices_flat = indices_queries.unsqueeze(0)
+
+    results = {}
+    for threshold in thresholds:
+        hit_count = 0
+        total_queries = indices_flat.shape[0]
+
+        for query_indices in indices_flat:
+            query_indices_np = query_indices.cpu().numpy().astype(int)
+            # Check if any slot in this query has load > threshold
+            max_load_in_query = slot_loads[query_indices_np].max() if len(query_indices_np) > 0 else 0
+            if max_load_in_query > threshold:
+                hit_count += 1
+
+        results[f"fraction_hit_load_gt_{threshold}"] = (
+            hit_count / total_queries if total_queries > 0 else 0.0
+        )
+
+    return results

@@ -1,6 +1,7 @@
 """BBPM: Block-Based Permutation Memory library."""
 
 from .config import load_config
+from .addressing import BBPMAddressing
 from .hashing import (
     BlockHash,
     GlobalAffineHash,
@@ -27,10 +28,12 @@ __all__ = [
     "BBPMMemoryFloat",
     "BaseMemory",
     "BinaryBBPMBloom",
+    # Addressing (theory-compatible)
+    "BBPMAddressing",
     # Hashing
     "HashFunction",
     "GlobalAffineHash",
-    "BlockHash",
+    "BlockHash",  # Deprecated: Use BBPMAddressing instead
     "MultiHashWrapper",
     # Diagnostics
     "occupancy_summary",

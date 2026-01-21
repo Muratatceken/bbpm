@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from bbpm import BBPMMemoryFloat, set_global_seed
+from bbpm.addressing.bbpm_addressing import BBPMAddressing
 
 
 @pytest.fixture
@@ -64,3 +65,33 @@ def test_write_read_exact_match_single_item(seed):
     # Should be very close (allowing for small numerical error)
     cos_sim = F.cosine_similarity(retrieved, value, dim=1).item()
     assert cos_sim > 0.99, f"Single item should match closely, got {cos_sim:.4f}"
+
+
+def test_write_read_with_bbpm_addressing(seed):
+    """Test write-read using BBPMAddressing (PRP-based)."""
+    set_global_seed(seed)
+
+    D = 100000
+    d = 64
+    K = 32
+    H = 1
+    block_size = 1024  # Power of 2, even n_bits
+    N = 100
+
+    # Create BBPMAddressing
+    addressing = BBPMAddressing(D, block_size, seed=seed, num_hashes=H, K=K)
+
+    # Create memory with BBPMAddressing
+    memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=addressing, device="cpu")
+    memory.clear()
+
+    keys = torch.arange(N, dtype=torch.int64)
+    values = torch.randn(N, d)
+    values = F.normalize(values, p=2, dim=1)
+
+    memory.write(keys, values)
+    retrieved = memory.read(keys)
+
+    # Check cosine similarity (should be high in low load with PRP)
+    cos_sim = F.cosine_similarity(retrieved, values, dim=1)
+    assert cos_sim.mean() > 0.95, f"BBPMAddressing should preserve values, got {cos_sim.mean():.4f}"

@@ -94,11 +94,11 @@ from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash
 # Option 1: Use default GlobalAffineHash
 memory1 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1)
 
-# Option 2: Use BlockHash (block-based addressing)
-block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
-memory2 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=block_hash)
+# Option 2: Use BBPMAddressing (recommended, PRP-based addressing)
+memory2 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, block_size=1024, seed=42)
 
 # Option 3: Use custom hash function
+from bbpm import GlobalAffineHash
 custom_hash = GlobalAffineHash(D=1_000_000, seed=123)
 memory3 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=custom_hash)
 ```
@@ -146,7 +146,8 @@ memory = BBPMMemoryFloat(
     d=64,                    # Value dimension
     K=50,                    # Active slots per item per hash
     H=1,                     # Number of independent hashes
-    hash_fn=None,            # Optional: custom hash function
+    block_size=None,         # Optional: creates BBPMAddressing if provided (must be power of 2, even n_bits)
+    hash_fn=None,            # Optional: custom hash function (overrides block_size if provided)
     dtype=torch.float32,     # Data type
     device="cpu",            # Device ("cpu" or "cuda")
     write_scale="1/sqrt(KH)", # Scaling: "unit" or "1/sqrt(KH)"
@@ -196,16 +197,75 @@ hash_fn = GlobalAffineHash(D=1_000_000, seed=42)
 indices = hash_fn.indices(keys, K=50, H=1)  # Shape: [B, K*H]
 ```
 
-#### `BlockHash`
+#### `BBPMAddressing` (Recommended)
 
-Block-based hash that first selects a block, then hashes within that block.
+Theory-compatible PRP-based addressing that guarantees no self-collisions.
 
 ```python
-from bbpm import BlockHash
+from bbpm import BBPMAddressing
+
+# Create BBPMAddressing
+addressing = BBPMAddressing(
+    D=1_000_000,
+    block_size=1024,  # Must be power of 2, and log2(block_size) must be even
+    seed=42,
+    num_hashes=1,  # H
+    K=50           # Active slots per item per hash
+)
+
+# Use with memory
+from bbpm import BBPMMemoryFloat
+memory = BBPMMemoryFloat(
+    D=1_000_000, d=64, K=50, H=1,
+    hash_fn=addressing  # Use BBPMAddressing
+)
+
+# Or use block_size parameter (creates BBPMAddressing internally)
+memory = BBPMMemoryFloat(
+    D=1_000_000, d=64, K=50, H=1,
+    block_size=1024  # Automatically creates BBPMAddressing
+)
+```
+
+**Key differences from BlockHash:**
+- **Guaranteed bijection**: PRP ensures no self-collisions within a block
+- **Theory-compatible**: Matches paper specification exactly
+- **Constraints**: block_size must be power of 2 AND log2(block_size) must be even (e.g., 256, 1024, 4096, not 512, 2048)
+
+#### `BlockHash` (Deprecated)
+
+⚠️ **DEPRECATED**: Block-based hash that uses hash-based offset mapping (not guaranteed bijection). 
+Use `BBPMAddressing` instead for theory-compatible addressing.
+
+```python
+from bbpm import BlockHash  # DeprecationWarning will be issued
 
 block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
 indices = block_hash.indices(keys, K=50, H=1)  # Shape: [B, K*H]
 ```
+
+**Migration path from BlockHash to BBPMAddressing:**
+
+```python
+# Old code (deprecated)
+from bbpm import BlockHash
+block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
+memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=block_hash)
+
+# New code (recommended)
+from bbpm import BBPMMemoryFloat
+# Option 1: Use block_size parameter (simplest)
+memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, block_size=1024, seed=42)
+
+# Option 2: Create BBPMAddressing explicitly
+from bbpm import BBPMAddressing
+addressing = BBPMAddressing(D=1_000_000, block_size=1024, seed=42, num_hashes=1, K=50)
+memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=addressing)
+```
+
+**Important notes:**
+- BlockHash allowed arbitrary block_size; BBPMAddressing requires power-of-2 with even n_bits
+- If your old block_size doesn't meet constraints, choose closest valid size (e.g., 512 → 256 or 1024)
 
 ### Diagnostics
 

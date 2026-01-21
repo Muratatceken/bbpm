@@ -1,5 +1,6 @@
 """Canonical BBPM float superposition memory with counts."""
 
+import warnings
 from typing import Dict, Literal, Optional
 
 import torch
@@ -24,6 +25,7 @@ class BBPMMemoryFloat(nn.Module):
         d: int,
         K: int,
         H: int = 1,
+        block_size: Optional[int] = None,
         hash_fn: Optional[HashFunction] = None,
         dtype: torch.dtype = torch.float32,
         device: str = "cpu",
@@ -38,13 +40,16 @@ class BBPMMemoryFloat(nn.Module):
             d: Value dimension
             K: Active slots per item per hash
             H: Number of independent hashes (multi-hash)
-            hash_fn: Hash function to use (default: GlobalAffineHash)
+            block_size: Block size L for BBPMAddressing (must be power of 2, even n_bits)
+                If provided and hash_fn is None, creates BBPMAddressing.
+                Ignored if hash_fn is provided.
+            hash_fn: Hash function to use (default: GlobalAffineHash if block_size is None)
             dtype: Data type for memory storage
             device: Device to use ("cpu" or "cuda")
             write_scale: Scaling for write operations
                 - "unit": No scaling
                 - "1/sqrt(KH)": Normalize by sqrt(K*H) for signal strength
-            seed: Seed for deterministic hashing (used when hash_fn is None)
+            seed: Seed for deterministic hashing (used when hash_fn or block_size creates addressing)
         """
         super().__init__()
 
@@ -56,11 +61,22 @@ class BBPMMemoryFloat(nn.Module):
         self.write_scale = write_scale
         self.seed = seed
 
-        # Hash function
-        if hash_fn is None:
-            self.hash_fn: HashFunction = GlobalAffineHash(D, seed=seed)
+        # Hash function selection priority: hash_fn override > block_size > default GlobalAffineHash
+        if hash_fn is not None:
+            if block_size is not None:
+                warnings.warn(
+                    "Both hash_fn and block_size provided. Using hash_fn and ignoring block_size.",
+                    UserWarning,
+                    stacklevel=2
+                )
+            self.hash_fn: HashFunction = hash_fn
+        elif block_size is not None:
+            # Create BBPMAddressing with block_size
+            from ..addressing.bbpm_addressing import BBPMAddressing
+            self.hash_fn: HashFunction = BBPMAddressing(D, block_size, seed=seed, num_hashes=H, K=K)
         else:
-            self.hash_fn = hash_fn
+            # Default: GlobalAffineHash
+            self.hash_fn: HashFunction = GlobalAffineHash(D, seed=seed)
 
         # Memory buffers
         self.register_buffer(

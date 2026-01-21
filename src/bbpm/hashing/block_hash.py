@@ -1,5 +1,10 @@
-"""Block-based hash function."""
+"""Block-based hash function.
 
+DEPRECATED: Use BBPMAddressing for theory-compatible PRP-based addressing.
+This class is kept for backward compatibility but will be removed in a future version.
+"""
+
+import warnings
 from typing import Optional
 
 import torch
@@ -8,6 +13,9 @@ import torch
 class BlockHash:
     """
     Block-based hash function.
+
+    DEPRECATED: Use BBPMAddressing for theory-compatible PRP-based addressing.
+    This class uses hash-based offset mapping which does NOT guarantee bijection.
 
     Memory is divided into blocks. For each key:
     1. Deterministically select a block
@@ -40,6 +48,14 @@ class BlockHash:
             inner_multiplier_A: Multiplier for inner block addressing (key term)
             inner_multiplier_B: Multiplier for inner block addressing (offset term)
         """
+        # Deprecation warning
+        warnings.warn(
+            "BlockHash is deprecated. Use BBPMAddressing for theory-compatible PRP-based addressing. "
+            "BlockHash will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+
         if D % block_size != 0:
             raise ValueError(f"D ({D}) must be divisible by block_size ({block_size})")
 
@@ -55,6 +71,8 @@ class BlockHash:
     def indices(self, keys: torch.Tensor, K: int, H: int) -> torch.Tensor:
         """
         Compute memory indices using block-based hashing.
+
+        DEPRECATED: Use BBPMAddressing.indices() instead.
 
         Args:
             keys: Input keys of shape [B]

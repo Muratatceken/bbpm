@@ -18,10 +18,14 @@ from .diagnostics import (
     slot_loads,
 )
 
+# Re-export BBPMAddressing for convenience
+from ..addressing import BBPMAddressing
+
 __all__ = [
     "HashFunction",
     "GlobalAffineHash",
-    "BlockHash",
+    "BlockHash",  # Deprecated
+    "BBPMAddressing",  # Preferred for theory-compatible addressing
     "MultiHashWrapper",
     "occupancy_summary",  # Use this instead of occupancy_hist
     "slot_loads",  # For microbenchmarks only

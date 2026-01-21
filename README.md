@@ -2,6 +2,79 @@
 
 A production-ready implementation of Block-Based Permutation Memory (BBPM) for efficient long-context neural memory systems.
 
+## What is BBPM?
+
+Block-Based Permutation Memory (BBPM) is a constant-time (O(1)) external memory mechanism that provides deterministic, address-based read/write operations independent of sequence length. Unlike attention mechanisms that use similarity-based search, BBPM uses deterministic hashing and intra-block permutations to achieve predictable retrieval fidelity.
+
+### Key Features
+
+- **Constant-time access**: O(K·d) per token, independent of sequence length
+- **Fixed memory footprint**: O(D·d) regardless of history length
+- **Theory-compatible addressing**: PRP-based intra-block addressing guarantees no self-collisions
+- **Differentiable**: Gradients flow through stored payloads despite discrete addressing
+- **GPU-friendly**: Fully vectorized operations for efficient GPU execution
+
+## BBPM Theory Alignment
+
+BBPM implements the theory from "Attention Is Not All You Need: Augmenting Transformers with a Constant-Time (O(1)) Sparse Memory Layer" with strict adherence to mathematical guarantees:
+
+### Addressing Specification
+
+BBPM uses two-stage addressing:
+
+1. **Block selection**: `b_x = H(h_x) mod B`
+   - Deterministic hash maps key to one of B blocks
+   - Uses independent seed decorrelated from PRP
+
+2. **Intra-block PRP**: `offset_k = P(h_x, k) mod L`
+   - Feistel network PRP operating on exact bit domain `n_bits = log2(L)`
+   - Guarantees bijection: distinct inputs produce distinct outputs
+   - **No modulo after PRP** - PRP output is directly used as offset
+
+3. **Final address**: `addr_k = b_x · L + offset_k`
+   - Combines block start and PRP-generated offset
+
+### Constraints
+
+- **block_size must be power of 2**: L = 2^n
+- **n_bits must be even**: log2(block_size) must be even (e.g., 256, 1024, 4096, 16384)
+  - This simplifies Feistel network split into equal left/right halves
+- **K <= block_size**: Required for distinct offsets guarantee
+- **D % block_size == 0**: Memory must be evenly divided into blocks
+
+### Signal-to-Noise Ratio
+
+BBPM's retrieval fidelity follows: `E[SNR] ≈ √(D/N)`
+
+- SNR depends only on memory-to-load ratio D/N, not sequence length
+- Variance reduction: `Var[SNR] ∝ 1/K`
+- Capacity transition: `N* = D/(K·H)` marks transition from low-collision to high-collision regime
+
+### Minimal Example
+
+```python
+from bbpm import BBPMMemoryFloat, BBPMAddressing
+
+# Configuration
+D, d, K, H = 1_000_000, 64, 50, 1
+block_size = 1024  # Power of 2, even n_bits
+
+# Create memory with PRP-based addressing
+memory = BBPMMemoryFloat(
+    D=D, d=d, K=K, H=H,
+    block_size=block_size,  # Creates BBPMAddressing internally
+    seed=42
+)
+
+# Write vectors
+keys = torch.arange(1000, dtype=torch.int64)
+values = torch.randn(1000, d)
+memory.write(keys, values)
+
+# Read back
+retrieved = memory.read(keys)
+```
+
 ## Quick Start
 
 ### Installation

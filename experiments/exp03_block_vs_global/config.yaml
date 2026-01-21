@@ -6,7 +6,8 @@ K: 32
 H: 1
 
 # Block hash settings
-block_size: 4096
+# Note: block_size must divide D evenly (1000000 / 4000 = 250 blocks)
+block_size: 4000
 
 # Test settings
 N_values: [20000, 50000, 100000, 150000, 200000]

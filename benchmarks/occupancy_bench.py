@@ -17,7 +17,9 @@ def benchmark_occupancy(D, N_values, K, H, device="cpu", seed=42):
     results = []
 
     global_hash = GlobalAffineHash(D, seed=seed)
-    block_hash = BlockHash(D, block_size=4096, seed=seed)
+    # Use block_size that divides D evenly (default D=1000000, so 4000 works)
+    block_size = 4000 if D % 4000 == 0 else (D // 100)  # Fallback to ~100 blocks
+    block_hash = BlockHash(D, block_size=block_size, seed=seed)
 
     for N in N_values:
         logger.info(f"Benchmarking N={N}")

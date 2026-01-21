@@ -198,8 +198,19 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
                 results["seeds"][f"seed_{seed}"][f"D_{D}"]["runs"].append(run_data)
 
+                # Log summary (use default window_size if available, otherwise show oracle)
+                window_summary = ""
+                if window_size < N and f"window_success_W_{window_size}" in window_successes:
+                    window_summary = f"Window(W={window_size})={window_successes[f'window_success_W_{window_size}']:.4f}"
+                elif window_successes:
+                    # Show first available window size
+                    first_w_key = list(window_successes.keys())[0]
+                    window_summary = f"Window({first_w_key.replace('window_success_W_', 'W=')})={window_successes[first_w_key]:.4f}"
+                else:
+                    window_summary = f"Oracle={oracle_success:.4f}"
+
                 logger.info(
-                    f"      N={N}: BBPM={bbpm_success:.4f}, Window={window_success:.4f}, "
+                    f"      N={N}: BBPM={bbpm_success:.4f}, {window_summary}, "
                     f"q2={occ_summary['q2_estimate']:.6f}, max_load={occ_summary['max_load']}"
                 )
 

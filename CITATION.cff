@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "BBPM"
+    given-names: "Contributors"
+title: "BBPM: Block-Based Permutation Memory"
+version: 0.1.0
+doi: 10.0000/zenodo.0000000
+date-released: 2026-01-01
+url: "https://github.com/yourusername/bbpm"

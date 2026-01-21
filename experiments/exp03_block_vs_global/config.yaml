@@ -1,0 +1,20 @@
+# Experiment 3: Block vs Global Hash Comparison
+
+D: 1000000
+d: 64
+K: 32
+H: 1
+
+# Block hash settings
+block_size: 4096
+
+# Test settings
+N_values: [20000, 50000, 100000, 150000, 200000]
+test_size: 2000
+batch_size: 10000
+
+# Reproducibility
+seed: 42
+
+# Device
+device: "auto"

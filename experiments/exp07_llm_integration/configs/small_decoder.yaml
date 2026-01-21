@@ -1,0 +1,4 @@
+# Small decoder config for LLM experiment
+model_name: "sshleifer/tiny-gpt2"
+max_length: 512
+batch_size: 1

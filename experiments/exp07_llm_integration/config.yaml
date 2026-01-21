@@ -1,0 +1,22 @@
+# Experiment 7: LLM Integration with Controller-Based Retrieval Injection
+
+# BBPM settings
+D: 1000000
+d: 64  # Will be overridden by model.config.hidden_size if transformers available
+K: 32
+H: 1
+
+# LLM settings
+model_name: "gpt2"  # Small model for CPU compatibility
+window_size: 50  # Sliding window size for baseline prompt
+
+# Test settings
+N_values: [100, 500, 1000, 2000, 5000]  # Number of facts to stream
+num_queries: 20  # Number of queries to test
+max_new_tokens: 20  # Max tokens to generate
+
+# Reproducibility
+seed: 42
+
+# Device
+device: "auto"

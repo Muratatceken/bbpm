@@ -1,0 +1,17 @@
+# Experiment 5: Needle in a Haystack
+
+D: 100000000  # Large memory
+d: 64
+K: 32
+H: 1
+
+# Test settings
+N_values: [1000, 5000, 10000, 20000, 50000, 100000, 500000, 1000000]
+test_queries: 100  # Number of random queries
+window_size: 1000  # Window baseline size
+
+# Reproducibility
+seed: 42
+
+# Device
+device: "auto"

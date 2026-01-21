@@ -1,0 +1,21 @@
+# Experiment 2: Ablation Study (K and H)
+# K ablation and multi-hash ablation
+
+D: 100000  # Small memory to force collisions
+d: 64
+N: 5000   # Number of items to store
+
+# Parameter sweeps
+K_values: [4, 16, 64]
+H_values: [1, 3]
+
+# Test settings
+test_size: 2000
+batch_size: 5000
+cosine_threshold: 0.9  # Threshold for accuracy calculation
+
+# Reproducibility
+seed: 42
+
+# Device
+device: "auto"

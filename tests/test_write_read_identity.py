@@ -95,3 +95,52 @@ def test_write_read_with_bbpm_addressing(seed):
     # Check cosine similarity (should be high in low load with PRP)
     cos_sim = F.cosine_similarity(retrieved, values, dim=1)
     assert cos_sim.mean() > 0.95, f"BBPMAddressing should preserve values, got {cos_sim.mean():.4f}"
+
+
+def test_unity_gain_low_load(seed):
+    """Test unity gain: write value v, read returns ≈ v in low load regime.
+    
+    With write_scale="unit" (default) and mean pooling, the memory should
+    act as a unity-gain pass-through filter in low load conditions.
+    """
+    set_global_seed(seed)
+
+    D = 1000000  # Very large memory for low load
+    d = 32
+    K = 50
+    H = 1
+    N = 100  # Small number of items (low load ratio)
+
+    memory = BBPMMemoryFloat(
+        D=D, d=d, K=K, H=H, 
+        write_scale="unit",  # Unity gain
+        device="cpu"
+    )
+    memory.clear()
+
+    # Write normalized vectors
+    keys = torch.arange(N, dtype=torch.int64)
+    values = torch.randn(N, d)
+    values = F.normalize(values, p=2, dim=1)
+    
+    memory.write(keys, values)
+    retrieved = memory.read(keys)
+
+    # Check cosine similarity (should be very high in low load)
+    cos_sim = F.cosine_similarity(retrieved, values, dim=1)
+    mean_cos = cos_sim.mean().item()
+    
+    assert mean_cos > 0.98, (
+        f"Unity gain not achieved. Mean cosine similarity: {mean_cos:.4f}, expected > 0.98. "
+        f"This indicates signal is being attenuated or lost."
+    )
+    
+    # Also check magnitude preservation (allowing for small noise)
+    retrieved_mags = retrieved.norm(p=2, dim=1)
+    values_mags = values.norm(p=2, dim=1)  # Should be ~1.0 (normalized)
+    
+    # Retrieved magnitudes should be close to 1.0 (allowing for superposition noise)
+    assert retrieved_mags.mean().item() > 0.9, (
+        f"Signal magnitude not preserved. Mean retrieved magnitude: {retrieved_mags.mean():.4f}, "
+        f"expected > 0.9. This suggests signal attenuation."
+    )

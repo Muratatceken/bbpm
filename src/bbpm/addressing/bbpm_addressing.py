@@ -6,6 +6,7 @@ Implements two-stage addressing:
 """
 
 import math
+from typing import List
 
 import torch
 
@@ -26,6 +27,86 @@ class BBPMAddressing:
     
     This ensures no self-collisions within a block (PRP guarantees bijection).
     """
+    
+    @staticmethod
+    def suggest_valid_block_sizes(approx_D: int, max_suggestions: int = 5) -> List[int]:
+        """Suggest valid block sizes near target D.
+        
+        Returns block sizes that are:
+        - Powers of 2
+        - Have even n_bits (log2(L) is even, e.g., 256, 1024, 4096)
+        - Reasonably divide D or are close to common divisors
+        
+        Args:
+            approx_D: Approximate total memory size D
+            max_suggestions: Maximum number of suggestions to return
+        
+        Returns:
+            List of valid block sizes in ascending order
+        """
+        # Valid block sizes with even n_bits: 256 (n=8), 1024 (n=10), 4096 (n=12), etc.
+        valid_sizes = [256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304]
+        
+        suggestions = []
+        for size in valid_sizes:
+            # Include if it divides D or is a reasonable fraction
+            if approx_D % size == 0:
+                suggestions.append(size)
+            elif size * 10 < approx_D:  # Include if not too large
+                suggestions.append(size)
+            
+            if len(suggestions) >= max_suggestions:
+                break
+        
+        # If no suggestions yet, return common valid sizes that are smaller than D
+        if not suggestions:
+            for size in valid_sizes:
+                if size < approx_D:
+                    suggestions.append(size)
+                if len(suggestions) >= max_suggestions:
+                    break
+        
+        return sorted(suggestions)
+    
+    @staticmethod
+    def _validate_block_size(block_size: int, D: int) -> None:
+        """Validate block_size with helpful error messages.
+        
+        Args:
+            block_size: Block size to validate
+            D: Total memory size
+        
+        Raises:
+            ValueError: With suggestions if validation fails
+        """
+        # Check power of two
+        if block_size & (block_size - 1) != 0:
+            suggestions = BBPMAddressing.suggest_valid_block_sizes(D)
+            raise ValueError(
+                f"block_size ({block_size}) must be power of 2.\n"
+                f"Valid block sizes for D={D}: {suggestions}\n"
+                f"Example: block_size={suggestions[0] if suggestions else 1024}"
+            )
+        
+        # Check even n_bits
+        n_bits = int(math.log2(block_size))
+        if n_bits % 2 != 0:
+            suggestions = BBPMAddressing.suggest_valid_block_sizes(D)
+            raise ValueError(
+                f"log2(block_size) ({n_bits}) must be even for Feistel split.\n"
+                f"block_size={block_size} (2^{n_bits}) is invalid.\n"
+                f"Valid block sizes with even n_bits: {suggestions}\n"
+                f"Example: block_size={suggestions[0] if suggestions else 1024} (2^10)"
+            )
+        
+        # Check divisibility
+        if D % block_size != 0:
+            suggestions = BBPMAddressing.suggest_valid_block_sizes(D)
+            raise ValueError(
+                f"D ({D}) must be divisible by block_size ({block_size}).\n"
+                f"Suggested block sizes for D={D}: {suggestions}\n"
+                f"Example: Use block_size={suggestions[0] if suggestions else 1024}"
+            )
 
     def __init__(
         self,
@@ -45,26 +126,15 @@ class BBPMAddressing:
             K: Active slots per item per hash (must be <= block_size)
 
         Raises:
-            ValueError: If block_size is not power of 2
-            ValueError: If D % block_size != 0
-            ValueError: If log2(block_size) is not even
+            ValueError: If block_size is not power of 2 (with suggestions)
+            ValueError: If D % block_size != 0 (with suggestions)
+            ValueError: If log2(block_size) is not even (with suggestions)
             ValueError: If K > block_size
         """
-        # Validate power of two
-        if block_size & (block_size - 1) != 0:
-            raise ValueError(f"block_size ({block_size}) must be power of 2")
+        # Validate block_size with helpful error messages
+        self._validate_block_size(block_size, D)
         
-        # Validate divisibility
-        if D % block_size != 0:
-            raise ValueError(f"D ({D}) must be divisible by block_size ({block_size})")
-        
-        # Validate even n_bits
         n_bits = int(math.log2(block_size))
-        if n_bits % 2 != 0:
-            raise ValueError(
-                f"log2(block_size) ({n_bits}) must be even for Feistel split. "
-                f"Valid block sizes: 256 (n=8), 1024 (n=10), 4096 (n=12), 16384 (n=14), etc."
-            )
         
         # Validate K <= L for distinct offsets guarantee
         if K > block_size:

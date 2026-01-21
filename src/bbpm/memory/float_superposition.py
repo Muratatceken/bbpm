@@ -16,7 +16,7 @@ class BBPMMemoryFloat(nn.Module):
 
     This is the main BBPM implementation as specified in the paper.
     Uses K-sparse addressing with H independent hash functions.
-    Maintains counts for debiasing during read operations.
+    Maintains counts for diagnostic purposes only (not used in read computation).
     """
 
     def __init__(
@@ -29,7 +29,7 @@ class BBPMMemoryFloat(nn.Module):
         hash_fn: Optional[HashFunction] = None,
         dtype: torch.dtype = torch.float32,
         device: str = "cpu",
-        write_scale: Literal["unit", "1/sqrt(KH)"] = "1/sqrt(KH)",
+        write_scale: Literal["unit", "1/sqrt(KH)"] = "unit",
         seed: int = 42,
     ):
         """
@@ -47,8 +47,8 @@ class BBPMMemoryFloat(nn.Module):
             dtype: Data type for memory storage
             device: Device to use ("cpu" or "cuda")
             write_scale: Scaling for write operations
-                - "unit": No scaling
-                - "1/sqrt(KH)": Normalize by sqrt(K*H) for signal strength
+                - "unit": No scaling (default, unity gain: write v → read ≈ v)
+                - "1/sqrt(KH)": Normalize by sqrt(K*H) for special use cases (reduces signal magnitude)
             seed: Seed for deterministic hashing (used when hash_fn or block_size creates addressing)
         """
         super().__init__()
@@ -138,8 +138,14 @@ class BBPMMemoryFloat(nn.Module):
         """
         Read values from memory using keys.
 
-        Retrieves values from K*H slots, applies per-slot debiasing (memory/(counts+eps)),
-        then pools across slots with mean.
+        Retrieves values from K*H slots and pools across slots with mean.
+        
+        Theory: Each memory slot contains the sum of all vectors written to it.
+        By averaging over K*H slots, the target signal is preserved while noise
+        cancels out via the Law of Large Numbers.
+        
+        Signal preservation: The target vector v appears in all K*H slots,
+        so mean([v + noise1, v + noise2, ...]) = v + mean(noise) ≈ v.
 
         Args:
             keys: Key tensor of shape [B]
@@ -152,18 +158,12 @@ class BBPMMemoryFloat(nn.Module):
         # Get indices: [B, K*H]
         indices = self.hash_fn.indices(keys, self.K, self.H)  # [B, K*H]
 
-        B = keys.shape[0]
-
-        # Gather memory and counts
+        # Gather memory (counts are only for diagnostics, not used in computation)
         gathered_memory = self.memory[indices]  # [B, K*H, d]
-        gathered_counts = self.counts[indices]  # [B, K*H, 1]
 
-        # Per-slot debiasing: memory / (counts + eps)
-        eps = 1e-8
-        debiased = gathered_memory / (gathered_counts + eps)  # [B, K*H, d]
-
-        # Pool across K*H slots with mean
-        result = debiased.mean(dim=1)  # [B, d]
+        # Pure mean pooling (no debiasing by counts)
+        # By Law of Large Numbers, noise vectors cancel out, leaving target signal
+        result = gathered_memory.mean(dim=1)  # [B, d]
 
         return result
 

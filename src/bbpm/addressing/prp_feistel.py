@@ -182,11 +182,15 @@ def prp_offsets(
         raise ValueError(f"K ({K}) must be <= L ({L}) for distinct offsets guarantee")
     
     # Derive independent PRP seed (decorrelated from block selection)
-    seed_prp_base_tensor = torch.tensor([seed ^ CONST_B], dtype=torch.int64, device=device)
+    # Mask seed to 64 bits to avoid Python int overflow
+    seed_masked = (seed ^ CONST_B) & MASK64
+    seed_prp_base_tensor = torch.tensor([seed_masked], dtype=torch.int64, device=device)
     seed_prp_base = mix64(seed_prp_base_tensor)[0]
     
     # Non-linear h mixing for multi-hash independence
-    h_tensor = torch.tensor([seed_prp_base ^ (h * LARGE_CONST)], dtype=torch.int64, device=device)
+    # Mask to avoid overflow
+    h_value = (seed_prp_base ^ (h * LARGE_CONST)) & MASK64
+    h_tensor = torch.tensor([h_value], dtype=torch.int64, device=device)
     h_seed = mix64(h_tensor)[0]
     
     # Per-key PRP seeds

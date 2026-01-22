@@ -60,12 +60,16 @@ def select_block(
     keys = keys.long()
     
     # Derive independent block selection seed (decorrelated from PRP)
-    seed_tensor = torch.tensor([seed ^ CONST_A], dtype=torch.int64, device=device)
+    # Mask seed to 64 bits to avoid Python int overflow
+    seed_masked = (seed ^ CONST_A) & MASK64
+    seed_tensor = torch.tensor([seed_masked], dtype=torch.int64, device=device)
     seed_block = mix64(seed_tensor)[0]
     
     # Incorporate h into seed (for multi-hash independence)
     # Use non-linear mixing to avoid structure
-    h_tensor = torch.tensor([seed_block ^ (h * CONST_C)], dtype=torch.int64, device=device)
+    # Mask to avoid overflow
+    h_value = (seed_block ^ (h * CONST_C)) & MASK64
+    h_tensor = torch.tensor([h_value], dtype=torch.int64, device=device)
     h_seed = mix64(h_tensor)[0]
     
     # Mix keys with h-dependent seed (vectorized over batch)

@@ -12,7 +12,7 @@ from bbpm import BBPMMemoryFloat
 
 # Create memory with PRP-based addressing
 memory = BBPMMemoryFloat(
-    D=1_000_000,      # Total memory slots
+    D=1_000_448,      # Total memory slots
     d=64,             # Value dimension
     K=50,             # Active slots per item per hash
     H=1,              # Number of hash functions
@@ -60,7 +60,7 @@ from bbpm import BBPMMemoryFloat
 
 # Create memory
 memory = BBPMMemoryFloat(
-    D=1_000_000,
+    D=1_000_448,
     d=64,
     K=50,
     H=1,
@@ -87,7 +87,7 @@ from bbpm import BBPMMemoryFloat, BBPMAddressing
 
 # Create addressing explicitly
 addressing = BBPMAddressing(
-    D=1_000_000,
+    D=1_000_448,
     block_size=1024,
     seed=42,
     num_hashes=2,  # Multi-hash for better error correction
@@ -96,7 +96,7 @@ addressing = BBPMAddressing(
 
 # Use with memory
 memory = BBPMMemoryFloat(
-    D=1_000_000,
+    D=1_000_448,
     d=64,
     K=50,
     H=2,
@@ -108,7 +108,7 @@ memory = BBPMMemoryFloat(
 
 ```python
 memory = BBPMMemoryFloat(
-    D=1_000_000,
+    D=1_000_448,
     d=64,
     K=30,
     H=3,  # 3 independent hashes
@@ -244,16 +244,17 @@ print(f"Collision rate: {diag['collision_rate']:.4f}")
 
 ### If you were using BlockHash:
 
+BlockHash has been removed from the codebase. Use BBPMAddressing instead:
+
 ```python
-# Old code (deprecated)
-from bbpm import BlockHash
-hash_fn = BlockHash(D=1_000_000, block_size=10_000, seed=42)
-memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=hash_fn)
+# Old code (no longer available)
+# from bbpm import BlockHash  # This no longer exists
+# hash_fn = BlockHash(D=1_000_000, block_size=10_000, seed=42)
 
 # New code (recommended)
 memory = BBPMMemoryFloat(
-    D=1_000_000, d=64, K=50, H=1,
-    block_size=1024,  # Use valid block_size instead
+    D=1_000_448, d=64, K=50, H=1,
+    block_size=1024,  # Automatically creates BBPMAddressing
     seed=42
 )
 ```
@@ -310,7 +311,7 @@ python examples/needle_sanity.py
 ```python
 # For special cases, you can use scaled writes
 memory = BBPMMemoryFloat(
-    D=1_000_000, d=64, K=50, H=1,
+    D=1_000_448, d=64, K=50, H=1,
     write_scale="1/sqrt(KH)",  # Not recommended (attenuates signal)
     seed=42
 )

@@ -1,7 +1,8 @@
 # Experiment 2: Ablation Study (K and H)
 # K ablation and multi-hash ablation
 
-D: 100000  # Small memory to force collisions
+D: 100352  # Small memory to force collisions (98 * 1024, divisible by block_size)
+block_size: 1024  # Block size (power of 2, even n_bits)
 d: 64
 N: 5000   # Number of items to store
 

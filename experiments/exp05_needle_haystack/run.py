@@ -24,6 +24,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     d = config["d"]
     K = config["K"]
     H = config["H"]
+    block_size = config.get("block_size", 1024)
     N_list = config["N_list"]
     max_N_over_D = config["max_N_over_D"]
     test_queries = config["test_queries"]
@@ -46,7 +47,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     # Warmup GPU (only once, before first operation)
     if device_str == "cuda":
         logger.info("Warming up GPU...")
-        warmup_memory = BBPMMemoryFloat(D=10000, d=d, K=K, H=H, device=device_str, seed=seeds[0])
+        warmup_memory = BBPMMemoryFloat(D=10240, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seeds[0])
         warmup_keys = torch.arange(100, device=device_str)
         warmup_values = torch.randn(100, d, device=device_str)
         warmup_values = F.normalize(warmup_values, p=2, dim=1)
@@ -75,8 +76,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             for N in valid_N_list:
                 logger.info(f"    Testing N={N} (N/D={N/D:.4f})")
 
-                # Create fresh memory with seed
-                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                # Create fresh memory with seed and PRP-based addressing
+                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seed)
                 memory.clear()
 
                 # Generate N key-value pairs

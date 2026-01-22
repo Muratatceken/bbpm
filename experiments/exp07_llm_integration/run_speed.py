@@ -26,6 +26,7 @@ def run_speed_test(config_path: Path, outdir: Path, device: str = "auto"):
     config = load_config(config_path)
     D = config["D"]
     d = config["d"]
+    block_size = config.get("block_size", 1024)
     K = config["K"]
     H = config["H"]
     model_name = config.get("model_name", "sshleifer/tiny-gpt2")
@@ -51,7 +52,7 @@ def run_speed_test(config_path: Path, outdir: Path, device: str = "auto"):
         model = AutoModelForCausalLM.from_pretrained(model_name).to(device_str)
         model.eval()
 
-        memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
+        memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str)
 
         for T in context_lengths:
             logger.info(f"Testing context length T={T}")

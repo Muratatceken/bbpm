@@ -23,6 +23,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     d = config["d"]
     K = config["K"]
     H = config["H"]
+    block_size = config.get("block_size", 1024)
     num_steps = config["num_steps"]
     drift_noise_scale = config["drift_noise_scale"]
     stable_key_id = config["stable_key_id"]
@@ -46,8 +47,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         "drifting_accuracy": [],
     }
 
-    # Initialize memory
-    memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str)
+    # Initialize memory with PRP-based addressing
+    memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str)
 
     # Stable key: fixed embedding
     stable_x = torch.randn(1, d, device=device_str)

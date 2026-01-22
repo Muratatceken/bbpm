@@ -71,7 +71,7 @@ def test_write_read_with_bbpm_addressing(seed):
     """Test write-read using BBPMAddressing (PRP-based)."""
     set_global_seed(seed)
 
-    D = 100000
+    D = 100352  # Divisible by 1024
     d = 64
     K = 32
     H = 1

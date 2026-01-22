@@ -342,7 +342,7 @@ bbpm/
 │     │  ├─ __init__.py
 │     │  ├─ base.py                # interface: hash(keys)->indices
 │     │  ├─ global_hash.py         # simple affine hash family
-│     │  ├─ block_hash.py          # block select + in-block permutation
+│     │  ├─ (block_hash.py removed - use addressing/bbpm_addressing.py instead)
 │     │  ├─ multihash.py           # independent salts, collision diagnostics
 │     │  └─ diagnostics.py         # occupancy histograms, skew metrics
 │     │

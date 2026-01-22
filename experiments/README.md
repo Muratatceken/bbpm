@@ -47,7 +47,7 @@ Reproduces K and multi-hash ablation. Uses small D to force collisions. Sweeps K
 **Output**: `ablation_K_H.png`
 
 ### exp03_block_vs_global
-Compares GlobalAffineHash vs BlockHash at same D, N, K, H. Reports fidelity, collision stats, occupancy skew. Now includes full `occupancy_summary` diagnostics and a second plot showing diagnostics (q2_estimate or max_load) vs N.
+Compares BBPMAddressing (PRP-based) vs GlobalAffineHash at same D, N, K, H. Reports fidelity, collision stats, occupancy skew. Now includes full `occupancy_summary` diagnostics and a second plot showing diagnostics (q2_estimate or max_load) vs N.
 
 **Sweep axes**: `N_values`
 **Diagnostics**: Full `occupancy_summary` (q2_estimate, max_load, collision_rate, gini_load, self_collision_prob)

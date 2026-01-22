@@ -27,8 +27,9 @@ except ImportError:
 def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     """Run LLM integration experiment with stress sweep and proper timing."""
     config = load_config(config_path)
-    D_list = config.get("D_list", [50000, 100000, 200000])
+    D_list = config.get("D_list", [51200, 100352, 200704])
     d_config = config.get("d", 64)  # Will be overridden by model.config.hidden_size if available
+    block_size = config.get("block_size", 1024)
     K_list = config.get("K_list", [4, 16, 64])
     H_list = config.get("H_list", [1])
     model_name = config.get("model_name", "gpt2")
@@ -70,7 +71,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                             logger.info(f"Testing seed={seed}, D={D}, K={K}, H={H}, N={N} (synthetic)")
                             
                             d = d_config
-                            memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                            memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seed)
                             memory.clear()
                             
                             # Generate deterministic codebook
@@ -150,7 +151,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     # Warmup GPU (only once, before first operation)
     if device_str == "cuda":
         logger.info("Warming up GPU...")
-        warmup_memory = BBPMMemoryFloat(D=10000, d=d, K=16, H=1, device=device_str, seed=seeds[0])
+        warmup_memory = BBPMMemoryFloat(D=10240, d=d, K=16, H=1, block_size=block_size, device=device_str, seed=seeds[0])
         warmup_keys = torch.arange(100, device=device_str)
         warmup_values = torch.randn(100, d, device=device_str)
         warmup_values = F.normalize(warmup_values, p=2, dim=1)
@@ -177,7 +178,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
                 logger.info(f"    Testing N={N} (N/D={N/D:.4f})")
 
                 # Create fresh memory
-                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seed)
                 memory.clear()
 
                 # Generate deterministic codebook

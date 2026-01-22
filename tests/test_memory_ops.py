@@ -10,7 +10,7 @@ from bbpm.addressing.bbpm_addressing import BBPMAddressing
 
 def test_write_read_identity_light_load():
     """Write/read with low load, expect high cosine similarity using BBPMAddressing."""
-    D = 100000  # Large memory
+    D = 100352  # Large memory (divisible by 1024)
     d = 64
     K = 32
     H = 1
@@ -42,7 +42,7 @@ def test_write_read_identity_light_load():
 
 def test_write_read_with_prp():
     """Verify memory works with BBPMAddressing (PRP-based)."""
-    D = 50000
+    D = 51200
     d = 32
     K = 20
     H = 1
@@ -67,7 +67,7 @@ def test_write_read_with_prp():
 
 def test_memory_determinism():
     """Same writes produce same memory state."""
-    D = 10000
+    D = 10240
     d = 16
     K = 10
     H = 1
@@ -98,7 +98,7 @@ def test_memory_determinism():
 
 def test_no_self_collisions():
     """Verify K offsets per key are distinct (PRP guarantee)."""
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 50
     H = 1
@@ -118,7 +118,7 @@ def test_no_self_collisions():
 
 def test_memory_with_multi_hash():
     """Test memory operations with multiple hash functions."""
-    D = 50000
+    D = 51200
     d = 32
     K = 20
     H = 3  # Multiple hashes
@@ -143,7 +143,7 @@ def test_memory_with_multi_hash():
 
 def test_memory_block_size_integration():
     """Test that memory works correctly with different block sizes."""
-    D = 50000
+    D = 51200
     d = 32
     K = 20
     H = 1

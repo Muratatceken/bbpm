@@ -56,7 +56,7 @@ BBPM's retrieval fidelity follows: `E[SNR] ≈ √(D/N)`
 from bbpm import BBPMMemoryFloat, BBPMAddressing
 
 # Configuration
-D, d, K, H = 1_000_000, 64, 50, 1
+D, d, K, H = 1_000_448, 64, 50, 1  # D divisible by block_size
 block_size = 1024  # Power of 2, even n_bits
 
 # Create memory with PRP-based addressing

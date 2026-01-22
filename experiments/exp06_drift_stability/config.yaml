@@ -1,6 +1,7 @@
 # Experiment 6: Drift Stability
 
-D: 1000000
+D: 300032  # Total memory slots (293 * 1024, divisible by block_size)
+block_size: 1024  # Block size (power of 2, even n_bits)
 d: 64
 K: 32
 H: 1

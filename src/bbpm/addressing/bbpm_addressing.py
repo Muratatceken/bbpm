@@ -199,7 +199,9 @@ class BBPMAddressing:
         # Concatenate all hashes: [B, K*H]
         result = torch.cat(indices_list, dim=1)  # [B, K*H]
         
-        # Ensure all indices are in valid range [0, D)
-        result = result.clamp(0, self.D - 1)
+        # Debug assertions only (no silent clamping - clamping masks addressing bugs)
+        if __debug__:
+            assert result.min() >= 0, f"Address {result.min()} < 0"
+            assert result.max() < self.D, f"Address {result.max()} >= D ({self.D})"
         
         return result

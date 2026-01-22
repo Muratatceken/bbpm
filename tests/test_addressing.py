@@ -54,7 +54,7 @@ def test_offsets_range():
 def test_addressing_determinism():
     """Test that same keys produce same addresses."""
     keys = torch.tensor([1, 2, 3, 4, 5], dtype=torch.int64)
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 20
     H = 1
@@ -71,7 +71,7 @@ def test_addressing_determinism():
 def test_address_range():
     """Test that all addresses are in valid range [0, D)."""
     keys = torch.randint(0, 10000, (100,), dtype=torch.int64)
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 20
     H = 1
@@ -86,7 +86,7 @@ def test_address_range():
 def test_block_selection():
     """Test that block IDs are in valid range [0, B)."""
     keys = torch.randint(0, 10000, (100,), dtype=torch.int64)
-    D = 10000
+    D = 10240
     block_size = 1024
     num_blocks = D // block_size  # Should be 9
     
@@ -105,7 +105,7 @@ def test_block_selection():
 def test_multi_hash_independence():
     """Test that different H values produce different addresses."""
     keys = torch.tensor([1, 2, 3], dtype=torch.int64)
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 20
     seed = 42
@@ -133,7 +133,7 @@ def test_multi_hash_independence():
 def test_block_size_power_of_two():
     """Test that valid block sizes (power of 2, even n_bits) work."""
     valid_block_sizes = [256, 1024, 4096, 16384]  # n_bits = 8, 10, 12, 14 (all even)
-    D = 100000
+    D = 102400
     
     for block_size in valid_block_sizes:
         if D % block_size == 0:
@@ -144,7 +144,7 @@ def test_block_size_power_of_two():
 def test_block_size_not_power_of_two():
     """Test that invalid block sizes (not power of 2) raise ValueError."""
     invalid_block_sizes = [100, 500, 1000, 3000]
-    D = 100000
+    D = 102400
     
     for block_size in invalid_block_sizes:
         if D % block_size == 0:  # Only test if divisible
@@ -156,7 +156,7 @@ def test_block_size_odd_n_bits():
     """Test that block sizes with odd n_bits (e.g., 512, 2048) raise ValueError."""
     # 512 = 2^9 (n_bits=9 is odd), 2048 = 2^11 (n_bits=11 is odd)
     invalid_block_sizes = [512, 2048, 8192]
-    D = 100000
+    D = 102400
     
     for block_size in invalid_block_sizes:
         if D % block_size == 0:
@@ -166,7 +166,7 @@ def test_block_size_odd_n_bits():
 
 def test_k_gt_block_size_rejected():
     """Test that K > block_size raises ValueError."""
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 2000  # > block_size
     
@@ -178,7 +178,7 @@ def test_addressing_shape():
     """Test that addressing produces correct output shape."""
     B = 50
     keys = torch.randint(0, 10000, (B,), dtype=torch.int64)
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 20
     H = 3
@@ -192,7 +192,7 @@ def test_addressing_shape():
 def test_no_self_collisions_within_block():
     """Test that addresses for same key have no self-collisions within a block."""
     keys = torch.tensor([42], dtype=torch.int64)  # Single key
-    D = 10000
+    D = 10240
     block_size = 1024
     K = 50
     H = 1

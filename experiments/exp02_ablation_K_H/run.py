@@ -21,6 +21,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     D = config["D"]
     d = config["d"]
     N = config["N"]
+    block_size = config.get("block_size", 1024)
     K_values = config["K_values"]
     H_values = config["H_values"]
     test_size = config["test_size"]
@@ -42,7 +43,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     # Warmup GPU (only once, before first operation)
     if device_str == "cuda":
         logger.info("Warming up GPU...")
-        warmup_memory = BBPMMemoryFloat(D=D, d=d, K=4, H=1, device=device_str, seed=seeds[0])
+        warmup_memory = BBPMMemoryFloat(D=D, d=d, K=4, H=1, block_size=block_size, device=device_str, seed=seeds[0])
         warmup_keys = torch.arange(100, device=device_str)
         warmup_values = torch.randn(100, d, device=device_str)
         warmup_values = F.normalize(warmup_values, p=2, dim=1)
@@ -72,7 +73,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             for K in K_values:
                 logger.info(f"  Testing H={H}, K={K}")
 
-                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+                memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seed)
                 memory.clear()
 
                 # Generate data

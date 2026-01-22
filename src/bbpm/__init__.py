@@ -3,7 +3,6 @@
 from .config import load_config
 from .addressing import BBPMAddressing
 from .hashing import (
-    BlockHash,
     GlobalAffineHash,
     HashFunction,
     MultiHashWrapper,
@@ -33,7 +32,6 @@ __all__ = [
     # Hashing
     "HashFunction",
     "GlobalAffineHash",
-    "BlockHash",  # Deprecated: Use BBPMAddressing instead
     "MultiHashWrapper",
     # Diagnostics
     "occupancy_summary",

@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash, get_device, set_global_seed
+from bbpm import BBPMMemoryFloat, GlobalAffineHash, get_device, set_global_seed
+from bbpm.addressing.bbpm_addressing import BBPMAddressing
 from bbpm.hashing.diagnostics import gini_load, max_load, occupancy_summary
 from bbpm.utils import get_logger
 
@@ -17,9 +18,9 @@ def benchmark_occupancy(D, N_values, K, H, device="cpu", seed=42):
     results = []
 
     global_hash = GlobalAffineHash(D, seed=seed)
-    # Use block_size that divides D evenly (default D=1000000, so 4000 works)
-    block_size = 4000 if D % 4000 == 0 else (D // 100)  # Fallback to ~100 blocks
-    block_hash = BlockHash(D, block_size=block_size, seed=seed)
+    # Use standard block_size=1024 (D must be divisible by 1024)
+    block_size = 1024
+    block_addressing = BBPMAddressing(D, block_size=block_size, seed=seed, num_hashes=H, K=K)
 
     for N in N_values:
         logger.info(f"Benchmarking N={N}")
@@ -32,8 +33,8 @@ def benchmark_occupancy(D, N_values, K, H, device="cpu", seed=42):
         max_global = max_load(indices_global, D)
         gini_global = gini_load(indices_global, D)
 
-        # Block hash
-        indices_block = block_hash.indices(keys, K, H).flatten()
+        # BBPMAddressing (PRP-based)
+        indices_block = block_addressing.indices(keys, K, H).flatten()
         occ_block = occupancy_summary(indices_block, D)
         max_block = max_load(indices_block, D)
         gini_block = gini_load(indices_block, D)
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Occupancy benchmark")
     parser.add_argument("--out", type=Path, default=Path("../../results/benchmarks/occupancy.json"))
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
-    parser.add_argument("--D", type=int, default=1000000)
+    parser.add_argument("--D", type=int, default=1000448)  # Divisible by 1024
     parser.add_argument("--N", type=int, nargs="+", default=[10000, 50000, 100000, 500000])
     parser.add_argument("--K", type=int, default=32)
     parser.add_argument("--H", type=int, default=1)

@@ -47,7 +47,7 @@ def test_independence_of_load(seed):
     """
     set_global_seed(seed)
 
-    D = 100000  # Large memory to avoid collisions
+    D = 100352  # Large memory to avoid collisions (divisible by 1024)
     d = 64
     K = 50
     H = 1

@@ -2,7 +2,6 @@
 
 from .base import HashFunction
 from .global_hash import GlobalAffineHash
-from .block_hash import BlockHash
 from .multihash import MultiHashWrapper
 from .diagnostics import (
     collision_rate,
@@ -24,8 +23,7 @@ from ..addressing import BBPMAddressing
 __all__ = [
     "HashFunction",
     "GlobalAffineHash",
-    "BlockHash",  # Deprecated
-    "BBPMAddressing",  # Preferred for theory-compatible addressing
+    "BBPMAddressing",  # Theory-compatible addressing
     "MultiHashWrapper",
     "occupancy_summary",  # Use this instead of occupancy_hist
     "slot_loads",  # For microbenchmarks only

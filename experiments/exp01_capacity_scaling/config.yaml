@@ -1,7 +1,8 @@
 # Experiment 1: Capacity Scaling
 # Replicates "cos sim fidelity vs N" trend
 
-D: 1000000  # Total memory slots
+D: 1000448  # Total memory slots (977 * 1024, divisible by block_size)
+block_size: 1024  # Block size (power of 2, even n_bits)
 d: 64       # Vector dimension
 K: 50       # Active slots per item
 H: 1        # Number of hashes

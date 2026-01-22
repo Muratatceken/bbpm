@@ -1,8 +1,9 @@
 # Experiment 5: Needle in a Haystack
 # Sweeps D and N to show degradation regimes
 
-# Memory sizes to test
-D_list: [50000, 100000, 200000, 1000000]
+# Memory sizes to test (all divisible by block_size)
+D_list: [51200, 100352, 200704, 1000448]
+block_size: 1024  # Block size (power of 2, even n_bits)
 d: 64
 K: 32
 H: 1

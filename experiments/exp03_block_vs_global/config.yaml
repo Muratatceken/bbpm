@@ -1,13 +1,10 @@
-# Experiment 3: Block vs Global Hash Comparison
+# Experiment 3: BBPMAddressing vs Global Hash Comparison
 
-D: 1000000
+D: 1000448  # Total memory slots (977 * 1024, divisible by block_size)
+block_size: 1024  # Block size (power of 2, even n_bits)
 d: 64
 K: 32
 H: 1
-
-# Block hash settings
-# Note: block_size must divide D evenly (1000000 / 4000 = 250 blocks)
-block_size: 4000
 
 # Test settings
 N_values: [20000, 50000, 100000, 150000, 200000]

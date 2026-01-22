@@ -70,7 +70,7 @@ from bbpm import BBPMMemoryFloat, set_global_seed
 set_global_seed(42)
 
 # Create memory: 1M slots, 64-dim values, K=50 active slots, H=1 hash
-memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, device="cpu")
+memory = BBPMMemoryFloat(D=1_000_448, d=64, K=50, H=1, block_size=1024, device="cpu")
 
 # Write some key-value pairs
 keys = torch.tensor([1, 2, 3, 4, 5])
@@ -89,18 +89,18 @@ print(f"Mean cosine similarity: {cosine_sim.mean().item():.4f}")
 ### Using Different Hash Functions
 
 ```python
-from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash
+from bbpm import BBPMMemoryFloat, GlobalAffineHash
 
 # Option 1: Use default GlobalAffineHash
-memory1 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1)
+memory1 = BBPMMemoryFloat(D=1_000_448, d=64, K=50, H=1)
 
 # Option 2: Use BBPMAddressing (recommended, PRP-based addressing)
-memory2 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, block_size=1024, seed=42)
+memory2 = BBPMMemoryFloat(D=1_000_448, d=64, K=50, H=1, block_size=1024, seed=42)
 
 # Option 3: Use custom hash function
 from bbpm import GlobalAffineHash
-custom_hash = GlobalAffineHash(D=1_000_000, seed=123)
-memory3 = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=custom_hash)
+custom_hash = GlobalAffineHash(D=1_000_448, seed=123)
+memory3 = BBPMMemoryFloat(D=1_000_448, d=64, K=50, H=1, hash_fn=custom_hash)
 ```
 
 ### GPU Usage
@@ -142,7 +142,7 @@ The canonical BBPM implementation with float superposition and counts.
 from bbpm import BBPMMemoryFloat
 
 memory = BBPMMemoryFloat(
-    D=1_000_000,              # Total memory slots
+    D=1_000_448,              # Total memory slots (divisible by block_size=1024)
     d=64,                    # Value dimension
     K=50,                    # Active slots per item per hash
     H=1,                     # Number of independent hashes
@@ -150,7 +150,7 @@ memory = BBPMMemoryFloat(
     hash_fn=None,            # Optional: custom hash function (overrides block_size if provided)
     dtype=torch.float32,     # Data type
     device="cpu",            # Device ("cpu" or "cuda")
-    write_scale="1/sqrt(KH)", # Scaling: "unit" or "1/sqrt(KH)"
+    write_scale="unit",      # Scaling: "unit" (default, unity gain) or "1/sqrt(KH)"
     seed=42,                 # Seed for deterministic hashing
 )
 
@@ -169,7 +169,7 @@ Binary variant for membership testing (Bloom filter-like).
 from bbpm import BinaryBBPMBloom
 
 bloom = BinaryBBPMBloom(
-    D=1_000_000,
+    D=1_000_448,
     K=50,
     H=3,
     device="cpu",
@@ -193,7 +193,7 @@ Global hash function that maps keys to indices across the entire memory.
 ```python
 from bbpm import GlobalAffineHash
 
-hash_fn = GlobalAffineHash(D=1_000_000, seed=42)
+hash_fn = GlobalAffineHash(D=1_000_448, seed=42)
 indices = hash_fn.indices(keys, K=50, H=1)  # Shape: [B, K*H]
 ```
 
@@ -206,7 +206,7 @@ from bbpm import BBPMAddressing
 
 # Create BBPMAddressing
 addressing = BBPMAddressing(
-    D=1_000_000,
+    D=1_000_448,
     block_size=1024,  # Must be power of 2, and log2(block_size) must be even
     seed=42,
     num_hashes=1,  # H
@@ -216,56 +216,22 @@ addressing = BBPMAddressing(
 # Use with memory
 from bbpm import BBPMMemoryFloat
 memory = BBPMMemoryFloat(
-    D=1_000_000, d=64, K=50, H=1,
+    D=1_000_448, d=64, K=50, H=1,
     hash_fn=addressing  # Use BBPMAddressing
 )
 
 # Or use block_size parameter (creates BBPMAddressing internally)
 memory = BBPMMemoryFloat(
-    D=1_000_000, d=64, K=50, H=1,
+    D=1_000_448, d=64, K=50, H=1,
     block_size=1024  # Automatically creates BBPMAddressing
 )
 ```
 
-**Key differences from BlockHash:**
+**Key features:**
 - **Guaranteed bijection**: PRP ensures no self-collisions within a block
 - **Theory-compatible**: Matches paper specification exactly
 - **Constraints**: block_size must be power of 2 AND log2(block_size) must be even (e.g., 256, 1024, 4096, not 512, 2048)
-
-#### `BlockHash` (Deprecated)
-
-⚠️ **DEPRECATED**: Block-based hash that uses hash-based offset mapping (not guaranteed bijection). 
-Use `BBPMAddressing` instead for theory-compatible addressing.
-
-```python
-from bbpm import BlockHash  # DeprecationWarning will be issued
-
-block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
-indices = block_hash.indices(keys, K=50, H=1)  # Shape: [B, K*H]
-```
-
-**Migration path from BlockHash to BBPMAddressing:**
-
-```python
-# Old code (deprecated)
-from bbpm import BlockHash
-block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
-memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=block_hash)
-
-# New code (recommended)
-from bbpm import BBPMMemoryFloat
-# Option 1: Use block_size parameter (simplest)
-memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, block_size=1024, seed=42)
-
-# Option 2: Create BBPMAddressing explicitly
-from bbpm import BBPMAddressing
-addressing = BBPMAddressing(D=1_000_000, block_size=1024, seed=42, num_hashes=1, K=50)
-memory = BBPMMemoryFloat(D=1_000_000, d=64, K=50, H=1, hash_fn=addressing)
-```
-
-**Important notes:**
-- BlockHash allowed arbitrary block_size; BBPMAddressing requires power-of-2 with even n_bits
-- If your old block_size doesn't meet constraints, choose closest valid size (e.g., 512 → 256 or 1024)
+- **D must be divisible by block_size**: Use values like 1_000_448 (977 * 1024) instead of 1_000_000
 
 ### Diagnostics
 
@@ -280,7 +246,7 @@ from bbpm import (
 
 # Get occupancy statistics
 indices = hash_fn.indices(keys, K=50, H=1).flatten()
-summary = occupancy_summary(indices, D=1_000_000)
+summary = occupancy_summary(indices, D=1_000_448)
 print(f"Mean load: {summary['mean_load']:.2f}")
 print(f"Max load: {summary['max_load']}")
 print(f"Gini coefficient: {summary['gini_load']:.4f}")
@@ -480,9 +446,12 @@ bbpm/
 │   │   └── eviction.py             # Eviction policies
 │   ├── hashing/          # Hash functions
 │   │   ├── global_hash.py          # GlobalAffineHash
-│   │   ├── block_hash.py           # BlockHash
 │   │   ├── multihash.py            # MultiHashWrapper
 │   │   └── diagnostics.py          # Occupancy, collisions, etc.
+│   ├── addressing/       # Theory-compatible addressing
+│   │   ├── bbpm_addressing.py      # BBPMAddressing (PRP-based)
+│   │   ├── block_selector.py       # Block selection
+│   │   └── prp_feistel.py          # Feistel PRP
 │   └── utils/            # Utilities
 │       ├── seed.py       # Random seed management
 │       ├── device.py     # Device detection
@@ -498,7 +467,7 @@ bbpm/
 │   └── exp07_llm_integration/
 │
 ├── tests/               # Test suite
-│   ├── test_hashing_determinism.py
+│   ├── test_addressing_determinism.py
 │   ├── test_write_read_identity.py
 │   ├── test_counts_unbiasedness.py
 │   ├── test_collision_regimes.py
@@ -572,21 +541,21 @@ query_keys = torch.randint(0, 100000, (100,), device="cuda")
 retrieved = memory.read(query_keys)
 ```
 
-### Workflow 3: Custom Hash Function
+### Workflow 3: Custom Addressing Function
 
 ```python
-from bbpm import BBPMMemoryFloat, BlockHash
+from bbpm import BBPMMemoryFloat, BBPMAddressing
 
-# Create custom block hash
-block_hash = BlockHash(D=1_000_000, block_size=10_000, seed=42)
+# Create custom BBPMAddressing
+addressing = BBPMAddressing(D=1_000_448, block_size=1024, seed=42, num_hashes=1, K=50)
 
 # Use with memory
 memory = BBPMMemoryFloat(
-    D=1_000_000,
+    D=1_000_448,
     d=64,
     K=50,
     H=1,
-    hash_fn=block_hash  # Use custom hash
+    hash_fn=addressing  # Use custom addressing
 )
 
 # Use as normal
@@ -632,7 +601,7 @@ set_global_seed(42)
 device = get_device("auto")
 
 # Configuration
-D = 1_000_000
+D = 1_000_448  # Divisible by block_size=1024
 d = 64
 K = 50
 H = 1

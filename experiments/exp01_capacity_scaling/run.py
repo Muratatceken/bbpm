@@ -25,6 +25,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
     d = config["d"]
     K = config["K"]
     H = config["H"]
+    block_size = config.get("block_size", 1024)
     item_counts = config["item_counts"]
     test_size = config["test_size"]
     batch_size = config["batch_size"]
@@ -53,8 +54,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
             "diagnostics": [],
         }
 
-        # Initialize memory
-        memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, device=device_str, seed=seed)
+        # Initialize memory with PRP-based addressing
+        memory = BBPMMemoryFloat(D=D, d=d, K=K, H=H, block_size=block_size, device=device_str, seed=seed)
 
         # Warmup GPU (only once per seed, before first operation)
         if device_str == "cuda" and seed == seeds[0]:

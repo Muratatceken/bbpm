@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from bbpm import BBPMMemoryFloat, BlockHash, GlobalAffineHash, get_device, occupancy_summary, self_collision_prob, set_global_seed
+from bbpm import BBPMMemoryFloat, GlobalAffineHash, get_device, occupancy_summary, self_collision_prob, set_global_seed
+from bbpm.addressing.bbpm_addressing import BBPMAddressing
 from bbpm.config import load_config
 from bbpm.hashing.diagnostics import collision_rate, gini_load, max_load
 from bbpm.utils import get_logger, Timer
@@ -44,7 +45,7 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
 
     # Initialize hash functions
     global_hash = GlobalAffineHash(D, seed=seed)
-    block_hash = BlockHash(D, block_size, seed=seed)
+    block_addressing = BBPMAddressing(D, block_size, seed=seed, num_hashes=H, K=K)
 
     for N in N_values:
         logger.info(f"Testing N={N}")
@@ -83,8 +84,8 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         results["global"]["self_collision_probs"].append(self_collision_prob(K, D))
         results["global"]["occupancy_summary"].append(occ_summary_global)
 
-        # Test Block Hash
-        block_mem = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=block_hash, device=device_str)
+        # Test BBPMAddressing (PRP-based)
+        block_mem = BBPMMemoryFloat(D=D, d=d, K=K, H=H, hash_fn=block_addressing, device=device_str)
         block_mem.clear()
 
         with Timer(f"Block write N={N}", device=device_str):
@@ -99,14 +100,14 @@ def run_experiment(config_path: Path, outdir: Path, device: str = "auto"):
         retrieved_block = torch.cat(retrieved_block, dim=0)
         cos_block = F.cosine_similarity(retrieved_block, values[:test_n], dim=1).mean().item()
 
-        indices_block = block_hash.indices(keys[:test_n], K, H)
+        indices_block = block_addressing.indices(keys[:test_n], K, H)
         occ_summary_block = occupancy_summary(indices_block.flatten(), D)
         results["block"]["cosines"].append(cos_block)
         results["block"]["collision_rates"].append(collision_rate(indices_block))
         results["block"]["max_loads"].append(max_load(indices_block.flatten(), D))
         results["block"]["gini_loads"].append(gini_load(indices_block.flatten(), D))
-        # For block hash, L = block_size
-        results["block"]["self_collision_probs"].append(self_collision_prob(K, block_size))
+        # PRP guarantees no self-collisions when K <= block_size
+        results["block"]["self_collision_probs"].append(0.0)
         results["block"]["occupancy_summary"].append(occ_summary_block)
 
         logger.info(f"N={N}: Global cos={cos_global:.4f}, Block cos={cos_block:.4f}")

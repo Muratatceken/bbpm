@@ -35,11 +35,16 @@ def derive_round_keys_vectorized(
     round_keys = torch.zeros(num_rounds, B, dtype=torch.int64, device=device)
     
     # Derive round keys for each round
+    # Create round constant tensor to avoid Python int overflow
+    round_const = torch.tensor(0x9E3779B97F4A7C15, dtype=torch.int64, device=device)
+    mix_const = torch.tensor(0xBF58476D1CE4E5B9, dtype=torch.int64, device=device)
+    
     for r in range(num_rounds):
-        # Mix seed with round number and large constant
-        round_input = prp_seeds + (r * 0x9E3779B97F4A7C15)
+        # Mix seed with round number and large constant (all in tensor space)
+        r_tensor = torch.tensor(r, dtype=torch.int64, device=device)
+        round_input = prp_seeds + (r_tensor * round_const)
         round_input = round_input & MASK64
-        round_keys[r] = (round_input * 0xBF58476D1CE4E5B9) & MASK64
+        round_keys[r] = (round_input * mix_const) & MASK64
         round_keys[r] = round_keys[r] ^ (round_keys[r] >> 31)
         round_keys[r] = round_keys[r] & MASK64
     

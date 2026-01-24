@@ -1,41 +1,66 @@
-"""Device detection and management utilities."""
+"""Device management utilities."""
 
-import torch
-from typing import Literal
+from typing import TYPE_CHECKING
 
-Device = Literal["cpu", "cuda"]
-
-
-def get_device(device: str = "auto") -> str:
-    """
-    Get the appropriate device string.
-
-    Args:
-        device: Device string ("cpu", "cuda", or "auto"). If "auto",
-                selects CUDA if available, otherwise CPU.
-
-    Returns:
-        Device string ("cpu" or "cuda")
-    """
-    if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    elif device in ("cpu", "cuda"):
-        if device == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but not available")
-        return device
-    else:
-        raise ValueError(f"Invalid device: {device}. Must be 'cpu', 'cuda', or 'auto'")
+if TYPE_CHECKING:
+    import torch
 
 
-def set_device(device: str) -> torch.device:
-    """
-    Get a torch.device object.
+def resolve_device(device: str) -> "torch.device":
+    """Resolve device string to torch.device.
+
+    Validates device string and returns corresponding torch.device.
 
     Args:
-        device: Device string ("cpu", "cuda", or "auto")
+        device: Device string ("cpu" or "cuda")
 
     Returns:
         torch.device object
+
+    Raises:
+        ValueError: If device string is not "cpu" or "cuda"
+        RuntimeError: If CUDA is requested but not available
     """
-    device_str = get_device(device)
-    return torch.device(device_str)
+    import torch
+
+    if device == "cpu":
+        return torch.device("cpu")
+    elif device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but not available")
+        return torch.device("cuda")
+    else:
+        raise ValueError(f"device must be 'cpu' or 'cuda', got {device}")
+
+
+def resolve_dtype(dtype: str) -> "torch.dtype":
+    """Resolve dtype string to torch.dtype.
+
+    Validates dtype string and returns corresponding torch.dtype.
+
+    Args:
+        dtype: Data type string ("float32", "bfloat16", etc.)
+
+    Returns:
+        torch.dtype object
+
+    Raises:
+        ValueError: If dtype string is not recognized
+    """
+    import torch
+
+    dtype_map = {
+        "float32": torch.float32,
+        "float64": torch.float64,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "int32": torch.int32,
+        "int64": torch.int64,
+    }
+
+    if dtype not in dtype_map:
+        raise ValueError(
+            f"dtype must be one of {list(dtype_map.keys())}, got {dtype}"
+        )
+
+    return dtype_map[dtype]

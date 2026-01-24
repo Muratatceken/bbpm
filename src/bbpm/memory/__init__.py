@@ -1,6 +1,6 @@
-"""Memory modules for BBPM."""
+"""Memory module for BBPM."""
 
-from .base import BaseMemory
-from .float_superposition import BBPMMemoryFloat
+from bbpm.memory.bbpm_memory import BBPMMemory
+from bbpm.memory.interfaces import IBbpmMemory, MemoryConfig
 
-__all__ = ["BaseMemory", "BBPMMemoryFloat"]
+__all__ = ["IBbpmMemory", "BBPMMemory", "MemoryConfig"]

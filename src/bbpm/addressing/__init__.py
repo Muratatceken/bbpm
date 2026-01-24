@@ -1,19 +1,15 @@
-"""BBPM addressing modules."""
+"""Addressing module for BBPM."""
 
-from .bbpm_addressing import BBPMAddressing
-from .block_selector import MASK64, mix64, select_block
-from .prp_feistel import (
-    derive_round_keys_vectorized,
-    feistel_prp_vectorized,
-    prp_offsets,
-)
+from bbpm.addressing.block_address import AddressConfig, BlockAddress
+from bbpm.addressing.hash_mix import derive_seed, make_salts, mix64, u64
+from bbpm.addressing.prp import FeistelPRP
 
 __all__ = [
-    "BBPMAddressing",
-    "select_block",
+    "AddressConfig",
+    "BlockAddress",
+    "FeistelPRP",
     "mix64",
-    "MASK64",
-    "prp_offsets",
-    "feistel_prp_vectorized",
-    "derive_round_keys_vectorized",
+    "u64",
+    "derive_seed",
+    "make_salts",
 ]

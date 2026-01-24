@@ -1,8 +1,14 @@
-"""Utility modules for BBPM."""
+"""Utilities module for BBPM."""
 
-from .seed import set_global_seed
-from .logging import get_logger
-from .timing import Timer
-from .device import get_device, set_device
+from bbpm.utils.device import resolve_device, resolve_dtype
+from bbpm.utils.profiling import cuda_mem_gb, timer, tokens_per_second
+from bbpm.utils.seeds import seed_everything
 
-__all__ = ["set_global_seed", "get_logger", "Timer", "get_device", "set_device"]
+__all__ = [
+    "resolve_device",
+    "resolve_dtype",
+    "seed_everything",
+    "timer",
+    "cuda_mem_gb",
+    "tokens_per_second",
+]

@@ -1,7 +1,4 @@
 """Experiment 04: Needle-in-haystack retrieval."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import random
@@ -16,13 +13,13 @@ from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
 from bbpm.metrics.stats import mean_ci95
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer, plot_line_with_ci
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp04"
@@ -183,7 +180,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     for distance in distance_values:
         if distance_cosines[distance]:
-            mean, lo, hi, std = mean_ci95(distance_cosines[distance])
+            stats = mean_ci95(distance_cosines[distance])
+            mean = stats["mean"]
+            lo = stats["ci95_low"]
+            hi = stats["ci95_high"]
+            std = stats["std"]
             summary[f"distance_{distance}"] = {
                 "cosine": {
                     "mean": mean,
@@ -201,7 +202,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     for N in N_values:
         if load_cosines[N]:
-            mean, lo, hi, std = mean_ci95(load_cosines[N])
+            stats = mean_ci95(load_cosines[N])
+            mean = stats["mean"]
+            lo = stats["ci95_low"]
+            hi = stats["ci95_high"]
+            std = stats["std"]
             summary[f"load_{N}"] = {
                 "cosine": {
                     "mean": mean,
@@ -281,7 +286,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "Needle-in-haystack",
         config_dict,
         seeds,
         raw_trials,

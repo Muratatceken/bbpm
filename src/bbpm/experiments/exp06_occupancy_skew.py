@@ -1,7 +1,4 @@
 """Experiment 06: Occupancy skew with non-uniform load."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import random
@@ -13,17 +10,18 @@ import numpy as np
 import torch
 
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
+from bbpm.addressing.hash_mix import mix64, u64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.occupancy import block_occupancy
 from bbpm.metrics.stats import mean_ci95, gini_coefficient
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp06"
@@ -157,11 +155,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         for s in s_values:
             mem.reset()
             zipf_token_ids = sample_zipf(vocab_size, N, s, seed)
-            # Convert token IDs to hx (deterministic mapping)
+            # Convert token IDs to hx (deterministic mapping using mix64)
             zipf_hx_list = []
             for token_id in zipf_token_ids:
-                # Deterministic hash from token ID
-                hx = hash(f"token_{token_id}_{seed}") % (2**64)
+                # Deterministic uint64 hash from token_id and seed
+                hx = mix64(u64(token_id) ^ u64(seed))
                 zipf_hx_list.append(hx)
             
             values = torch.randn(N, d, device=device)
@@ -196,24 +194,24 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         collision_vals = [t["collision_rate"] for t in uniform_trials]
         
         summary["uniform"] = {
-            "max_mean_ratio": {
-                "mean": np.mean(max_mean_vals),
-                "ci95_low": mean_ci95(max_mean_vals)[1],
-                "ci95_high": mean_ci95(max_mean_vals)[2],
-                "std": np.std(max_mean_vals),
-            },
-            "gini": {
-                "mean": np.mean(gini_vals),
-                "ci95_low": mean_ci95(gini_vals)[1],
-                "ci95_high": mean_ci95(gini_vals)[2],
-                "std": np.std(gini_vals),
-            },
-            "collision_rate": {
-                "mean": np.mean(collision_vals),
-                "ci95_low": mean_ci95(collision_vals)[1],
-                "ci95_high": mean_ci95(collision_vals)[2],
-                "std": np.std(collision_vals),
-            },
+                    "max_mean_ratio": {
+                        "mean": np.mean(max_mean_vals),
+                        "ci95_low": mean_ci95(max_mean_vals)["ci95_low"],
+                        "ci95_high": mean_ci95(max_mean_vals)["ci95_high"],
+                        "std": np.std(max_mean_vals),
+                    },
+                    "gini": {
+                        "mean": np.mean(gini_vals),
+                        "ci95_low": mean_ci95(gini_vals)["ci95_low"],
+                        "ci95_high": mean_ci95(gini_vals)["ci95_high"],
+                        "std": np.std(gini_vals),
+                    },
+                    "collision_rate": {
+                        "mean": np.mean(collision_vals),
+                        "ci95_low": mean_ci95(collision_vals)["ci95_low"],
+                        "ci95_high": mean_ci95(collision_vals)["ci95_high"],
+                        "std": np.std(collision_vals),
+                    },
         }
     
     # Zipf modes
@@ -227,20 +225,20 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             summary[f"zipf_s_{s}"] = {
                 "max_mean_ratio": {
                     "mean": np.mean(max_mean_vals),
-                    "ci95_low": mean_ci95(max_mean_vals)[1],
-                    "ci95_high": mean_ci95(max_mean_vals)[2],
+                    "ci95_low": mean_ci95(max_mean_vals)["ci95_low"],
+                    "ci95_high": mean_ci95(max_mean_vals)["ci95_high"],
                     "std": np.std(max_mean_vals),
                 },
                 "gini": {
                     "mean": np.mean(gini_vals),
-                    "ci95_low": mean_ci95(gini_vals)[1],
-                    "ci95_high": mean_ci95(gini_vals)[2],
+                    "ci95_low": mean_ci95(gini_vals)["ci95_low"],
+                    "ci95_high": mean_ci95(gini_vals)["ci95_high"],
                     "std": np.std(gini_vals),
                 },
                 "collision_rate": {
                     "mean": np.mean(collision_vals),
-                    "ci95_low": mean_ci95(collision_vals)[1],
-                    "ci95_high": mean_ci95(collision_vals)[2],
+                    "ci95_low": mean_ci95(collision_vals)["ci95_low"],
+                    "ci95_high": mean_ci95(collision_vals)["ci95_high"],
                     "std": np.std(collision_vals),
                 },
             }
@@ -318,7 +316,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "Occupancy skew",
         config_dict,
         seeds,
         raw_trials,

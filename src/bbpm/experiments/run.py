@@ -1,20 +1,18 @@
-"""Canonical experiment runner with subparser-based CLI."""
+"""Canonical experiment runner with --exp flag CLI."""
 
 import argparse
-import sys
 from pathlib import Path
 
-# Add src to path for bbpm imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 # Import experiment modules
-import exp01_snr_scaling
-import exp02_k_h_ablation
-import exp03_runtime_vs_attention
-import exp04_needle
-import exp05_end2end_assoc
-import exp06_occupancy_skew
-import exp07_drift_reachability
+from bbpm.experiments import (
+    exp01_snr_scaling,
+    exp02_k_h_ablation,
+    exp03_runtime_vs_attention,
+    exp04_needle,
+    exp05_end2end_assoc,
+    exp06_occupancy_skew,
+    exp07_drift_reachability,
+)
 
 EXPERIMENTS = {
     "exp01": ("SNR Scaling", exp01_snr_scaling),
@@ -27,12 +25,20 @@ EXPERIMENTS = {
 }
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add common arguments to parser.
+def main():
+    """Main CLI entrypoint."""
+    parser = argparse.ArgumentParser(
+        description="Run BBPM experiments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     
-    Args:
-        parser: Argument parser to add common args to
-    """
+    # Common arguments
+    parser.add_argument(
+        "--exp",
+        choices=list(EXPERIMENTS.keys()),
+        required=True,
+        help="Experiment to run (exp01-exp07)",
+    )
     parser.add_argument(
         "--out_dir", type=Path, default=Path("artifacts"),
         help="Output directory for metrics and figures"
@@ -49,28 +55,27 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         "--dtype", choices=["float32", "bfloat16"], default="float32",
         help="Data type"
     )
-
-
-def main():
-    """Main CLI entrypoint."""
-    parser = argparse.ArgumentParser(
-        description="Run BBPM experiments",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
     
-    subparsers = parser.add_subparsers(dest="exp", help="Experiment to run", required=True)
+    # Parse known args first to get experiment ID
+    args, unknown = parser.parse_known_args()
     
-    # Create subparser for each experiment
-    for exp_id, (exp_name, exp_module) in EXPERIMENTS.items():
-        exp_parser = subparsers.add_parser(exp_id, help=exp_name)
-        add_common_args(exp_parser)
-        exp_module.add_args(exp_parser)
-    
-    args = parser.parse_args()
-    
-    # Get experiment module
+    # Get experiment module and add its specific arguments
     exp_id = args.exp
     _, exp_module = EXPERIMENTS[exp_id]
+    
+    # Create a new parser for experiment-specific args
+    exp_parser = argparse.ArgumentParser()
+    exp_module.add_args(exp_parser)
+    
+    # Parse experiment-specific args from unknown args
+    exp_args, remaining = exp_parser.parse_known_args(unknown)
+    
+    if remaining:
+        parser.error(f"Unrecognized arguments: {remaining}")
+    
+    # Merge common and experiment-specific args
+    for key, value in vars(exp_args).items():
+        setattr(args, key, value)
     
     # Run experiment
     print(f"Running {EXPERIMENTS[exp_id][0]} ({exp_id})...")

@@ -1,7 +1,4 @@
 """Experiment 02: K/H ablation study."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import random
@@ -18,13 +15,13 @@ from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
 from bbpm.metrics.occupancy import block_occupancy
 from bbpm.metrics.stats import mean_ci95, gini_coefficient
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer, plot_line_with_ci
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp02"
@@ -214,11 +211,36 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 gini_vals = [t["gini_skew"] for t in trials]
                 self_coll_vals = [t["self_collision_rate"] for t in trials]
                 
-                cosine_mean, cosine_lo, cosine_hi, cosine_std = mean_ci95(cosine_vals)
-                collision_mean, collision_lo, collision_hi, collision_std = mean_ci95(collision_vals)
-                skew_mean, skew_lo, skew_hi, skew_std = mean_ci95(skew_vals)
-                gini_mean, gini_lo, gini_hi, gini_std = mean_ci95(gini_vals)
-                self_coll_mean, self_coll_lo, self_coll_hi, self_coll_std = mean_ci95(self_coll_vals)
+                cosine_stats = mean_ci95(cosine_vals)
+                collision_stats = mean_ci95(collision_vals)
+                skew_stats = mean_ci95(skew_vals)
+                gini_stats = mean_ci95(gini_vals)
+                self_coll_stats = mean_ci95(self_coll_vals)
+                
+                cosine_mean = cosine_stats["mean"]
+                cosine_lo = cosine_stats["ci95_low"]
+                cosine_hi = cosine_stats["ci95_high"]
+                cosine_std = cosine_stats["std"]
+                
+                collision_mean = collision_stats["mean"]
+                collision_lo = collision_stats["ci95_low"]
+                collision_hi = collision_stats["ci95_high"]
+                collision_std = collision_stats["std"]
+                
+                skew_mean = skew_stats["mean"]
+                skew_lo = skew_stats["ci95_low"]
+                skew_hi = skew_stats["ci95_high"]
+                skew_std = skew_stats["std"]
+                
+                gini_mean = gini_stats["mean"]
+                gini_lo = gini_stats["ci95_low"]
+                gini_hi = gini_stats["ci95_high"]
+                gini_std = gini_stats["std"]
+                
+                self_coll_mean = self_coll_stats["mean"]
+                self_coll_lo = self_coll_stats["ci95_low"]
+                self_coll_hi = self_coll_stats["ci95_high"]
+                self_coll_std = self_coll_stats["std"]
                 
                 summary[key] = {
                     "cosine": {
@@ -368,7 +390,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "K/H ablation",
         config_dict,
         seeds,
         raw_trials,

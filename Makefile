@@ -2,9 +2,9 @@
 
 lint:
 	@echo "Running ruff..."
-	ruff check src/ experiments/ tests/
+	ruff check src/ tests/
 	@echo "Running black --check..."
-	black --check src/ experiments/ tests/
+	black --check src/ tests/
 	@echo "Running mypy..."
 	mypy src/bbpm/
 
@@ -14,13 +14,13 @@ test:
 
 experiments:
 	@echo "Running all experiments..."
-	@python experiments/run.py exp01 --device cpu --seeds 3 || exit 1
-	@python experiments/run.py exp02 --device cpu --seeds 3 || exit 1
-	@python experiments/run.py exp03 --device cpu --seeds 1 || exit 1
-	@python experiments/run.py exp04 --device cpu --seeds 3 || exit 1
-	@python experiments/run.py exp05 --device cpu --seeds 2 || exit 1
-	@python experiments/run.py exp06 --device cpu --seeds 3 || exit 1
-	@python experiments/run.py exp07 --device cpu --seeds 3 || exit 1
+	@python -m bbpm.experiments.run --exp exp01 --device cpu --seeds 3 || exit 1
+	@python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 3 || exit 1
+	@python -m bbpm.experiments.run --exp exp03 --device cpu --seeds 1 || exit 1
+	@python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 3 || exit 1
+	@python -m bbpm.experiments.run --exp exp05 --device cpu --seeds 2 || exit 1
+	@python -m bbpm.experiments.run --exp exp06 --device cpu --seeds 3 || exit 1
+	@python -m bbpm.experiments.run --exp exp07 --device cpu --seeds 3 || exit 1
 	@echo "All experiments completed!"
 
 all: lint test experiments

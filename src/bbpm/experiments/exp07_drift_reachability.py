@@ -1,7 +1,4 @@
 """Experiment 07: Drift and reachability under keying modes."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import random
@@ -13,19 +10,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from bbpm.addressing.hash_mix import mix64, u64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
 from bbpm.metrics.stats import mean_ci95
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer, plot_line_with_ci
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
-from bbpm.addressing.hash_mix import mix64, u64
 
 EXP_ID = "exp07"
 EXP_SLUG = "drift_reachability"
@@ -269,7 +266,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         step_highs = []
         for step in steps:
             if reachability_by_step[step]:
-                mean, lo, hi, std = mean_ci95(reachability_by_step[step])
+                stats = mean_ci95(reachability_by_step[step])
+                mean = stats["mean"]
+                lo = stats["ci95_low"]
+                hi = stats["ci95_high"]
+                std = stats["std"]
                 step_means.append(mean)
                 step_lows.append(lo)
                 step_highs.append(hi)
@@ -327,7 +328,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "Drift and reachability",
         config_dict,
         seeds,
         raw_trials,

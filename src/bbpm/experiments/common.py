@@ -1,17 +1,13 @@
 """Common utilities for experiments."""
 
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Add src to path for bbpm imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 import torch
 
-from plotting import get_git_commit, get_hardware_info
+from bbpm.experiments.plotting import get_git_commit, get_hardware_info
 
 
 def make_output_paths(out_dir: Path, exp_id: str, exp_slug: str) -> tuple[Path, Path]:
@@ -24,13 +20,15 @@ def make_output_paths(out_dir: Path, exp_id: str, exp_slug: str) -> tuple[Path, 
         
     Returns:
         (metrics_path, figure_path)
+        - metrics_path: artifacts/metrics/exp01.json (no suffix)
+        - figure_path: artifacts/figures/exp01_snr_scaling.pdf (with suffix)
     """
     metrics_dir = out_dir / "metrics"
     figures_dir = out_dir / "figures"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     figures_dir.mkdir(parents=True, exist_ok=True)
     
-    metrics_path = metrics_dir / f"{exp_id}_{exp_slug}.json"
+    metrics_path = metrics_dir / f"{exp_id}.json"
     figure_path = figures_dir / f"{exp_id}_{exp_slug}.pdf"
     
     return metrics_path, figure_path
@@ -93,6 +91,7 @@ def dtype_from_string(dtype_str: str) -> torch.dtype:
 def write_metrics_json(
     path: Path,
     experiment_id: str,
+    experiment_name: str,
     config: Dict[str, Any],
     seeds: List[int],
     raw_trials: List[Dict[str, Any]],
@@ -103,7 +102,8 @@ def write_metrics_json(
     
     Args:
         path: Output JSON path
-        experiment_id: Experiment identifier
+        experiment_id: Experiment identifier (e.g., "exp01")
+        experiment_name: Human-readable experiment name (e.g., "SNR scaling")
         config: Experiment configuration
         seeds: List of seeds used
         raw_trials: List of per-trial results
@@ -113,14 +113,20 @@ def write_metrics_json(
     hardware = get_hardware_info()
     git_commit = get_git_commit()
     
-    metrics = {
-        "experiment_name": experiment_id,
-        "timestamp": datetime.now().isoformat(),
-        "git_commit": git_commit,
+    # Build hardware dict
+    hardware_dict = {
         "device": hardware["device"],
         "torch_version": hardware["torch_version"],
         "cuda_version": hardware.get("cuda_version"),
         "gpu_name": hardware.get("gpu_name"),
+    }
+    
+    metrics = {
+        "experiment_id": experiment_id,
+        "experiment_name": experiment_name,
+        "timestamp": datetime.now().isoformat(),
+        "git_commit": git_commit,
+        "hardware": hardware_dict,
         "config": config,
         "seeds": seeds,
         "raw_trials": raw_trials,

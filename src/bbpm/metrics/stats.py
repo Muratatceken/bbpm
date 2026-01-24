@@ -24,7 +24,7 @@ def gini_coefficient(values: Sequence[float]) -> float:
     return (2 * np.sum(index * values)) / (n * np.sum(values)) - (n + 1) / n
 
 
-def mean_ci95(values: Sequence[float]) -> Tuple[float, float, float, float]:
+def mean_ci95(values: Sequence[float]) -> Dict[str, float]:
     """Compute mean and 95% confidence interval using normal approximation.
     
     Uses z=1.96 for all sample sizes (acceptable for n>=10 in ML papers).
@@ -35,24 +35,43 @@ def mean_ci95(values: Sequence[float]) -> Tuple[float, float, float, float]:
         values: Array of float values
         
     Returns:
-        (mean, ci_low, ci_high, std)
+        Dictionary with keys: "mean", "std", "ci95_low", "ci95_high", "n"
+        All values are JSON-serializable floats (or int for "n").
     """
     if not values:
-        return (0.0, 0.0, 0.0, 0.0)
+        return {
+            "mean": 0.0,
+            "std": 0.0,
+            "ci95_low": 0.0,
+            "ci95_high": 0.0,
+            "n": 0,
+        }
     
     arr = np.array(values)
     n = len(arr)
     mean = float(np.mean(arr))
     
     if n == 1:
-        return (mean, mean, mean, 0.0)
+        return {
+            "mean": mean,
+            "std": 0.0,
+            "ci95_low": mean,
+            "ci95_high": mean,
+            "n": 1,
+        }
     
     std = float(np.std(arr, ddof=1))  # Sample standard deviation
     se = std / np.sqrt(n)  # Standard error
     z = 1.96  # Normal approximation for 95% CI
     margin = z * se
     
-    return (mean, mean - margin, mean + margin, std)
+    return {
+        "mean": mean,
+        "std": std,
+        "ci95_low": mean - margin,
+        "ci95_high": mean + margin,
+        "n": n,
+    }
 
 
 def summarize_groups(
@@ -87,12 +106,12 @@ def summarize_groups(
         for metric_key in metric_keys:
             values = [row[metric_key] for row in group_rows if metric_key in row]
             if values:
-                mean, ci_low, ci_high, std = mean_ci95(values)
+                stats_dict = mean_ci95(values)
                 summaries[metric_key] = {
-                    "mean": mean,
-                    "ci95_low": ci_low,
-                    "ci95_high": ci_high,
-                    "std": std,
+                    "mean": stats_dict["mean"],
+                    "ci95_low": stats_dict["ci95_low"],
+                    "ci95_high": stats_dict["ci95_high"],
+                    "std": stats_dict["std"],
                 }
         result[group_key] = summaries
     

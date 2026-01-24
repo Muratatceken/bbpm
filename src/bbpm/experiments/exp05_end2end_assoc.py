@@ -1,7 +1,4 @@
 """Experiment 05: End-to-end associative recall."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import random
@@ -16,13 +13,13 @@ import torch.optim as optim
 
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer
+from bbpm.experiments.plotting import save_pdf, add_footer
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp05"
@@ -466,7 +463,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         final_accs = [t[model_name]["final_test_acc"] for t in raw_trials]
         param_counts = [t[model_name]["param_count"] for t in raw_trials]
         
-        mean_acc, acc_lo, acc_hi, acc_std = mean_ci95(final_accs)
+        acc_stats = mean_ci95(final_accs)
+        mean_acc = acc_stats["mean"]
+        acc_lo = acc_stats["ci95_low"]
+        acc_hi = acc_stats["ci95_high"]
+        acc_std = acc_stats["std"]
         mean_params = np.mean(param_counts)
         
         summary[model_name] = {
@@ -536,7 +537,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "End-to-end associative recall",
         config_dict,
         seeds,
         raw_trials,

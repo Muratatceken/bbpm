@@ -2,12 +2,8 @@
 
 import argparse
 import random
-import sys
 from pathlib import Path
 from typing import Dict, Any
-
-# Add src to path for bbpm imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,13 +13,13 @@ from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity, mse
 from bbpm.metrics.stats import mean_ci95, summarize_groups
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer, plot_line_with_ci
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp01"
@@ -65,6 +61,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     K = 32  # Slots per item
     H = 4  # Hash families
     
+    # Use count_normalized mode to enable occupancy tracking via mem.stats()
     mem_cfg = MemoryConfig(
         num_blocks=B,
         block_size=L,
@@ -74,7 +71,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         dtype=dtype_str,
         device=str(device),
         normalize_values="none",
-        read_mode="raw_mean",
+        read_mode="count_normalized",  # Enables counts tensor for occupancy tracking
         master_seed=42,
     )
     
@@ -125,14 +122,16 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             mean_cosine = np.mean(cosines)
             mean_mse = np.mean(mses)
             
-            # Compute occupancy (fraction of slots that received at least one write)
-            # Approximate: total writes = N * K * H, unique slots <= D
-            total_writes = N * K * H
-            # For exact occupancy, we'd need to track unique addresses, but for now
-            # use an approximation: occupied_slots ≈ min(D, total_writes) (collision-aware)
-            # Actually, we can compute exact occupancy from memory state if needed
-            # For now, use a simple approximation
-            occupied_ratio = min(1.0, total_writes / D)
+            # Compute occupancy using mem.stats() (requires count_normalized mode)
+            # This gives exact occupancy: fraction of slots with count > 0
+            stats = mem.stats()
+            if "occupied_slots" in stats:
+                occupied_slots = stats["occupied_slots"]
+                occupied_ratio = occupied_slots / D
+            else:
+                # Fallback: approximate occupancy if counts not available
+                total_writes = N * K * H
+                occupied_ratio = min(1.0, total_writes / D)
             
             # Record trial
             raw_trials.append({
@@ -152,9 +151,24 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         mse_vals = [t["mse"] for t in n_trials]
         occ_vals = [t["occupancy"] for t in n_trials]
         
-        cosine_mean, cosine_lo, cosine_hi, cosine_std = mean_ci95(cosine_vals)
-        mse_mean, mse_lo, mse_hi, mse_std = mean_ci95(mse_vals)
-        occ_mean, occ_lo, occ_hi, occ_std = mean_ci95(occ_vals)
+        cosine_stats = mean_ci95(cosine_vals)
+        mse_stats = mean_ci95(mse_vals)
+        occ_stats = mean_ci95(occ_vals)
+        
+        cosine_mean = cosine_stats["mean"]
+        cosine_lo = cosine_stats["ci95_low"]
+        cosine_hi = cosine_stats["ci95_high"]
+        cosine_std = cosine_stats["std"]
+        
+        mse_mean = mse_stats["mean"]
+        mse_lo = mse_stats["ci95_low"]
+        mse_hi = mse_stats["ci95_high"]
+        mse_std = mse_stats["std"]
+        
+        occ_mean = occ_stats["mean"]
+        occ_lo = occ_stats["ci95_low"]
+        occ_hi = occ_stats["ci95_high"]
+        occ_std = occ_stats["std"]
         
         summary[f"N_{N}"] = {
             "cosine": {
@@ -235,7 +249,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "SNR scaling",
         config_dict,
         seeds,
         raw_trials,

@@ -1,7 +1,4 @@
 """Experiment 03: Runtime benchmark vs attention."""
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import argparse
 import time
@@ -16,12 +13,12 @@ import torch.nn.functional as F
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
-from common import (
+from bbpm.experiments.common import (
     make_output_paths,
     ensure_device,
     write_metrics_json,
 )
-from plotting import save_pdf, add_footer, plot_line_with_ci
+from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp03"
@@ -358,7 +355,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     write_metrics_json(
         metrics_path,
-        f"{EXP_ID}_{EXP_SLUG}",
+        EXP_ID,
+        "Runtime vs Attention",
         config_dict,
         [42],  # Single seed for timing
         raw_trials,

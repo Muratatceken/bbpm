@@ -34,8 +34,12 @@ def benchmark_addresses(
     
     # Time measurement
     start = time.perf_counter()
-    for hx in hx_list:
+    for i, hx in enumerate(hx_list):
         _ = addresser.addresses(hx)
+        if (i + 1) % 1000 == 0:
+            print(f"    Progress: {i + 1}/{len(hx_list)} calls", end="\r", flush=True)
+    if len(hx_list) >= 1000:
+        print()  # New line after progress
     elapsed = time.perf_counter() - start
     
     return {
@@ -69,8 +73,12 @@ def benchmark_addresses_tensor(
         torch.cuda.synchronize()
     
     start = time.perf_counter()
-    for hx in hx_list:
+    for i, hx in enumerate(hx_list):
         _ = addresser.addresses_tensor(hx, device)
+        if (i + 1) % 1000 == 0:
+            print(f"    Progress: {i + 1}/{len(hx_list)} calls", end="\r", flush=True)
+    if len(hx_list) >= 1000:
+        print()  # New line after progress
     
     if device.type == "cuda":
         torch.cuda.synchronize()
@@ -111,8 +119,9 @@ def main():
         {"num_blocks": 2**14, "block_size": 256, "H": 8, "K": 128},
     ]
     
-    num_iterations = 10000
-    num_warmup = 100
+    # Reduced iterations for faster testing (can be increased for more accurate results)
+    num_iterations = 1000
+    num_warmup = 10
     
     print("=" * 80)
     print("BlockAddress Addressing Performance Benchmark")

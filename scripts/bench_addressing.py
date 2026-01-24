@@ -129,6 +129,10 @@ def main():
     print(f"Iterations per config: {num_iterations}")
     print(f"Warmup iterations: {num_warmup}")
     print()
+    print("Note: For small workloads, addresses() may be faster due to tensor overhead.")
+    print("      addresses_tensor() benefits increase with larger K and batch processing.")
+    print("      CUDA has launch overhead; benefits appear with larger workloads.")
+    print()
     
     for cfg_dict in configs:
         cfg = AddressConfig(
@@ -154,7 +158,10 @@ def main():
         print(f"  {ref_cpu['method']:25s} {ref_cpu['avg_usec']:8.2f} μs/call  {ref_cpu['ops_per_sec']:10.0f} ops/sec")
         print(f"  {vec_cpu['method']:25s} {vec_cpu['avg_usec']:8.2f} μs/call  {vec_cpu['ops_per_sec']:10.0f} ops/sec")
         speedup = ref_cpu['avg_usec'] / vec_cpu['avg_usec']
-        print(f"  Speedup: {speedup:.2f}x")
+        if speedup >= 1.0:
+            print(f"  Speedup: {speedup:.2f}x (tensor faster)")
+        else:
+            print(f"  Speedup: {speedup:.2f}x (list faster, tensor overhead for small K)")
         
         # CUDA benchmarks (if available)
         if torch.cuda.is_available():

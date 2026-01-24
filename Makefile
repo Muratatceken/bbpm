@@ -14,13 +14,13 @@ test:
 
 experiments:
 	@echo "Running all experiments..."
-	@python -m bbpm.experiments.run --exp exp01 --device cpu --seeds 3 || exit 1
-	@python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 3 || exit 1
-	@python -m bbpm.experiments.run --exp exp03 --device cpu --seeds 1 || exit 1
-	@python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 3 || exit 1
-	@python -m bbpm.experiments.run --exp exp05 --device cpu --seeds 2 || exit 1
-	@python -m bbpm.experiments.run --exp exp06 --device cpu --seeds 3 || exit 1
-	@python -m bbpm.experiments.run --exp exp07 --device cpu --seeds 3 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp01 --device cpu --seeds 3 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 3 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp03 --device cpu --seeds 1 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 3 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp05 --device cpu --seeds 2 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp06 --device cpu --seeds 3 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp07 --device cpu --seeds 3 || exit 1
 	@echo "All experiments completed!"
 
 all: lint test experiments

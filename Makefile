@@ -14,7 +14,14 @@ test:
 
 experiments:
 	@echo "Running all experiments..."
-	python -m experiments.run_all
+	@python experiments/run.py exp01 --device cpu --seeds 3 || exit 1
+	@python experiments/run.py exp02 --device cpu --seeds 3 || exit 1
+	@python experiments/run.py exp03 --device cpu --seeds 1 || exit 1
+	@python experiments/run.py exp04 --device cpu --seeds 3 || exit 1
+	@python experiments/run.py exp05 --device cpu --seeds 2 || exit 1
+	@python experiments/run.py exp06 --device cpu --seeds 3 || exit 1
+	@python experiments/run.py exp07 --device cpu --seeds 3 || exit 1
+	@echo "All experiments completed!"
 
 all: lint test experiments
 	@echo "All checks passed!"

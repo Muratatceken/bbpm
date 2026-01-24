@@ -13,6 +13,34 @@ from bbpm.addressing.hash_mix import mix64, u64
 if TYPE_CHECKING:
     import torch
 
+# Mix64 multiplication constants (uint64, converted to signed int64 for PyTorch)
+# These constants exceed 2^63, so we use signed int64 two's complement representation
+# for compatibility with PyTorch's torch.long (signed int64) dtype
+_MIX64_CONST1_U64 = 0xBF58476D1CE4E5B9
+_MIX64_CONST2_U64 = 0x94D049BB133111EB
+
+
+def _to_signed_int64(u64_val: int) -> int:
+    """Convert uint64 value to signed int64 representation for PyTorch.
+    
+    PyTorch's torch.long is signed int64. For values >= 2^63, we need
+    to use two's complement representation: val - 2^64.
+    
+    Args:
+        u64_val: Unsigned 64-bit integer value
+        
+    Returns:
+        Signed int64 representation (Python int)
+    """
+    if u64_val < 2**63:
+        return u64_val
+    else:
+        return u64_val - 2**64
+
+
+_MIX64_CONST1 = _to_signed_int64(_MIX64_CONST1_U64)
+_MIX64_CONST2 = _to_signed_int64(_MIX64_CONST2_U64)
+
 
 @dataclass(frozen=True)
 class FeistelPRP:
@@ -31,6 +59,7 @@ class FeistelPRP:
     rounds: int  # >= 6 recommended
     master_key: int  # uint64
     round_consts: tuple[int, ...] = field(init=False, repr=False)
+    _mask_cache: dict = field(init=False, repr=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate parameters."""
@@ -49,6 +78,9 @@ class FeistelPRP:
             round_consts.append(state)
         # Use object.__setattr__ because dataclass is frozen
         object.__setattr__(self, "round_consts", tuple(round_consts))
+        
+        # Initialize mask cache for device-aware logical shift masks
+        object.__setattr__(self, "_mask_cache", {})
 
     def _split(self, x: int) -> tuple[int, int]:
         """Split x into left and right halves.
@@ -202,13 +234,38 @@ class FeistelPRP:
         
         # For logical right shift: keep lower (64 - shift) bits, zero-fill upper shift bits
         # Arithmetic shift on negative fills upper bits with 1s, so we mask them out
-        # Mask for lower (64 - shift) bits: (1 << (64 - shift)) - 1
-        mask_bits = 64 - shift
-        # Create mask as tensor on same device as x (device-safe)
-        mask = torch.tensor((1 << mask_bits) - 1, dtype=torch.long, device=x.device)
+        # Use cached mask tensor to avoid per-call allocation (critical for CUDA performance)
+        mask_tensor = self._get_u64_mask_tensor(x.device, shift)
         
         # Perform arithmetic shift, then mask to get logical shift
-        return (x >> shift) & mask
+        return (x >> shift) & mask_tensor
+
+    def _get_u64_mask_tensor(self, device: "torch.device", shift: int) -> "torch.LongTensor":
+        """Get cached mask tensor for logical right shift.
+        
+        Returns a scalar tensor mask for (64 - shift) low bits, cached per device/shift.
+        This avoids repeated tensor allocations on CUDA, reducing allocator pressure.
+        
+        Args:
+            device: Target device (CPU or CUDA)
+            shift: Shift amount (< 64)
+            
+        Returns:
+            Scalar LongTensor mask on specified device
+        """
+        import torch
+        
+        if shift >= 64:
+            return torch.tensor(0, dtype=torch.long, device=device)
+        
+        cache_key = (device, shift)
+        if cache_key not in self._mask_cache:
+            mask_bits = 64 - shift
+            mask_value = (1 << mask_bits) - 1
+            mask_tensor = torch.tensor(mask_value, dtype=torch.long, device=device)
+            self._mask_cache[cache_key] = mask_tensor
+        
+        return self._mask_cache[cache_key]
 
     def _mix64_tensor(self, x: "torch.LongTensor") -> "torch.LongTensor":
         """Vectorized 64-bit mixing function based on SplitMix64.
@@ -233,11 +290,11 @@ class FeistelPRP:
 
         # Round 1: XOR-shift right 30, multiply
         z_shifted = self._logical_right_shift(z, 30)
-        z = ((z ^ z_shifted) * 0xBF58476D1CE4E5B9) & U64_MASK
+        z = ((z ^ z_shifted) * _MIX64_CONST1) & U64_MASK
 
         # Round 2: XOR-shift right 27, multiply
         z_shifted = self._logical_right_shift(z, 27)
-        z = ((z ^ z_shifted) * 0x94D049BB133111EB) & U64_MASK
+        z = ((z ^ z_shifted) * _MIX64_CONST2) & U64_MASK
 
         # Round 3: Final XOR-shift right 31
         z_shifted = self._logical_right_shift(z, 31)

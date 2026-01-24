@@ -45,6 +45,18 @@ class AddressConfig:
                 f"block_size must be power of 2, got {self.block_size}"
             )
 
+        # PRP domain constraint: block_size must be power-of-two (2^nbits)
+        # This is required because FeistelPRP operates over domain [0, 2^nbits)
+        # where nbits = log2(block_size). The PRP permutes offsets k in [0, K-1]
+        # within each block, ensuring unique offsets per hash family.
+        # Validation: block_size is already verified as power-of-two above.
+        nbits_implied = self.block_size.bit_length() - 1
+        if (1 << nbits_implied) != self.block_size:
+            raise ValueError(
+                f"block_size ({self.block_size}) must be exact power of 2 "
+                f"for PRP domain [0, 2^nbits), got {self.block_size}"
+            )
+
         # Enforce K <= block_size
         if self.K > self.block_size:
             raise ValueError(

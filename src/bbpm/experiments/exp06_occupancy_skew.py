@@ -285,6 +285,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "block_counts": occ_token["counts_per_block"],
         })
     
+    print("Summarizing results...")
     # Summarize
     summary = {}
     

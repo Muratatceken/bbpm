@@ -480,6 +480,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             },
         })
     
+    print("Summarizing results...")
     # Summarize
     summary = {}
     for model_name in ["windowed_transformer", "transformer_external_kv", "bbpm"]:

@@ -366,6 +366,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "trainable_proj_hamming": hamming_trainable,
         })
     
+    print("Summarizing results...")
     # Summarize across seeds
     summary = {}
     steps = list(range(num_steps))

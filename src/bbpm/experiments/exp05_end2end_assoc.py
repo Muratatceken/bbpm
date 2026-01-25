@@ -446,7 +446,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 print(f"      Epoch {epoch_idx + 1}/{num_epochs}...", end=" ", flush=True)
             model3.train()
             epoch_loss = 0
-            for i in range(0, len(train_seqs), batch_size):
+            num_batches = (len(train_seqs) + batch_size - 1) // batch_size
+            for batch_idx, i in enumerate(range(0, len(train_seqs), batch_size)):
+                # Show progress for first epoch or every 10% of batches
+                if epoch_idx == 0 and (batch_idx == 0 or (batch_idx + 1) % max(1, num_batches // 10) == 0 or batch_idx == num_batches - 1):
+                    print(f"[batch {batch_idx + 1}/{num_batches}]", end=" ", flush=True)
                 batch_seqs = train_seqs[i:i+batch_size]
                 batch_targets = train_targets[i:i+batch_size]
                 

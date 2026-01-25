@@ -42,6 +42,12 @@ def add_args(parser: argparse.ArgumentParser) -> None:
         default=[0, 10, 50, 100, 500, 1000],
         help="Distance values (number of items between needle and query)",
     )
+    parser.add_argument(
+        "--fixed_N",
+        type=int,
+        default=2000,
+        help="Fixed N for distance experiment (number of distractors)",
+    )
 
 
 def run(args: argparse.Namespace) -> Dict[str, Any]:
@@ -58,6 +64,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     num_seeds = args.seeds
     N_values = args.N_values
     distance_values = args.distance_values
+    fixed_N = args.fixed_N
     out_dir = args.out_dir
     
     # Fixed memory configuration (canonical paper config)
@@ -90,7 +97,6 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         mem = BBPMMemory(mem_cfg)
         
         # === Experiment 1: Retrieval vs Distance (fixed N) ===
-        fixed_N = 2000
         for distance in distance_values:
             # Clamp distance to valid range [0, fixed_N] and skip invalid cases
             if distance < 0 or distance > fixed_N:

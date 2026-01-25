@@ -20,10 +20,10 @@ experiments-paper:
 	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp01 --device cpu --seeds 10 --N_values 2000 4000 8000 16000 32000 48000 64000 80000 || exit 1
 	@echo "Exp02: K/H ablation (seeds=10, N=[2k,8k,16k,32k,48k])"
 	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 10 --N_values 2000 8000 16000 32000 48000 || exit 1
-	@echo "Exp03: Runtime vs Attention (CUDA, seeds=1, T=[256,512,1024,2048,4096])"
-	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp03 --device cuda --seeds 1 --T_values 256 512 1024 2048 4096 || exit 1
+	@echo "Exp03: Runtime vs Attention (CUDA, seeds=1, T=[256,512,1024,2048,4096], d_model=256, num_heads=8)"
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp03 --device cuda --seeds 1 --T_values 256 512 1024 2048 4096 --d_model 256 --num_heads 8 || exit 1
 	@echo "Exp04: Needle-in-haystack (seeds=10, fixed_N=32k, distance=[0,128,512,2048,8192,16384,32768], N=[2k,8k,16k,32k,48k,64k,80k])"
-	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 10 --N_values 2000 8000 16000 32000 48000 64000 80000 --distance_values 0 128 512 2048 8192 16384 32768 || exit 1
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 10 --fixed_N 32000 --N_values 2000 8000 16000 32000 48000 64000 80000 --distance_values 0 128 512 2048 8192 16384 32768 || exit 1
 	@echo "Exp05: End-to-end associative recall (seeds=5, vocab=50k, T=256, epochs=10)"
 	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp05 --device cpu --seeds 5 --vocab_size 50000 --T 256 --num_epochs 10 --batch_size 64 || exit 1
 	@echo "Exp06: Occupancy skew (seeds=10, N=64k, vocab=100k, s=[0.0,0.5,1.0,1.2,1.5,2.0])"

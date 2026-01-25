@@ -299,7 +299,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "bandwidth_stats": bandwidth_stats,
             "e2e_time_stats": e2e_stats,
         })
+        print("done")
     
+    print("Summarizing results...")
     # Summarize with CI stats
     summary = {}
     for trial in raw_trials:
@@ -314,6 +316,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "bbpm_peak_mem_mb": trial["bbpm_peak_mem_mb"],
         }
     
+    print("Generating figure...")
     # Generate figure with CI bands
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
     
@@ -390,6 +393,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     add_footer(fig, EXP_ID)
     
+    print("Saving outputs...")
     # Save outputs
     metrics_path, figure_path = make_output_paths(out_dir, EXP_ID, EXP_SLUG)
     

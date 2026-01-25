@@ -236,6 +236,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     if config_count % 10 == 0 or config_count == 1:
                         print("done")
     
+    print("Summarizing results...")
     # Summarize across seeds using summarize_groups
     summary = summarize_groups(
         raw_trials,
@@ -354,6 +355,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     add_footer(fig, EXP_ID)
     
+    print("Saving outputs...")
     # Save outputs
     metrics_path, figure_path = make_output_paths(out_dir, EXP_ID, EXP_SLUG)
     

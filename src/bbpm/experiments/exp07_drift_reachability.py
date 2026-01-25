@@ -463,6 +463,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "ci95_high": hamming_highs,
             }
     
+    print("Generating figure...")
     # Generate figure with 3 panels
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
     
@@ -525,6 +526,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     add_footer(fig, EXP_ID)
     
+    print("Saving outputs...")
     # Save outputs
     metrics_path, figure_path = make_output_paths(out_dir, EXP_ID, EXP_SLUG)
     

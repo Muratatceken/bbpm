@@ -422,6 +422,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     save_pdf(fig, figure_path)
     
+    print(f"✓ Runtime vs Attention completed")
+    print(f"  Metrics: {metrics_path}")
+    print(f"  Figure: {figure_path}")
+    
     return {
         "metrics_path": str(metrics_path),
         "figure_path": str(figure_path),

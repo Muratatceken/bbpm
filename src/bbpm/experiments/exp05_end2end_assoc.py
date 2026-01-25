@@ -382,7 +382,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         train_losses2 = []
         test_accs2 = []
         
-        for epoch in range(num_epochs):
+        for epoch_idx, epoch in enumerate(range(num_epochs)):
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                print(f"      Epoch {epoch_idx + 1}/{num_epochs}...", end=" ", flush=True)
             model2.train()
             epoch_loss = 0
             for i in range(0, len(train_seqs), batch_size):
@@ -411,7 +413,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs2.append(correct / total)
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                avg_train_loss = train_losses2[-1]
+                test_acc = test_accs2[-1]
+                print(f"loss={avg_train_loss:.4f}, acc={test_acc:.4f}")
         
+        print(f"    Model 3/3: BBPM...", flush=True)
         # Model 3: BBPM
         model3 = BBPMAssociativeModel(embedding, d_model, mem_cfg, vocab_size).to(device)
         param_count3 = count_parameters(model3)
@@ -426,7 +433,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         train_losses3 = []
         test_accs3 = []
         
-        for epoch in range(num_epochs):
+        for epoch_idx, epoch in enumerate(range(num_epochs)):
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                print(f"      Epoch {epoch_idx + 1}/{num_epochs}...", end=" ", flush=True)
             model3.train()
             epoch_loss = 0
             for i in range(0, len(train_seqs), batch_size):
@@ -455,6 +464,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs3.append(correct / total)
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                avg_train_loss = train_losses3[-1]
+                test_acc = test_accs3[-1]
+                print(f"loss={avg_train_loss:.4f}, acc={test_acc:.4f}")
         
         raw_trials.append({
             "seed": seed,

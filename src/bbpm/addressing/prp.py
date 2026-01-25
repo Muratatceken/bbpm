@@ -42,6 +42,24 @@ _MIX64_CONST1 = _to_signed_int64(_MIX64_CONST1_U64)
 _MIX64_CONST2 = _to_signed_int64(_MIX64_CONST2_U64)
 
 
+def u64_to_i64(u: int) -> int:
+    """Convert uint64 to signed int64 representation (bit-preserving).
+    
+    PyTorch's torch.long is signed int64. For values >= 2^63, we use
+    two's complement representation: val - 2^64.
+    
+    This is a public wrapper around _to_signed_int64 for reuse in other modules.
+    
+    Args:
+        u: Unsigned 64-bit integer value
+        
+    Returns:
+        Signed int64 representation (Python int)
+    """
+    u = u & 0xFFFFFFFFFFFFFFFF
+    return u if u < 2**63 else u - 2**64
+
+
 @dataclass(frozen=True)
 class FeistelPRP:
     """Feistel network-based pseudo-random permutation.
@@ -81,6 +99,9 @@ class FeistelPRP:
         
         # Initialize mask cache for device-aware logical shift masks
         object.__setattr__(self, "_mask_cache", {})
+        
+        # Initialize constant cache for device-aware scalar tensors
+        object.__setattr__(self, "_const_cache", {})
 
     def _split(self, x: int) -> tuple[int, int]:
         """Split x into left and right halves.
@@ -266,7 +287,28 @@ class FeistelPRP:
             self._mask_cache[cache_key] = mask_tensor
         
         return self._mask_cache[cache_key]
-
+    
+    def _const_i64_tensor(self, device: "torch.device", value_u64: int) -> "torch.LongTensor":
+        """Get cached scalar int64 tensor for uint64 constant.
+        
+        Caches tensors per (device, value) to avoid repeated allocations.
+        Critical for CUDA performance in tight loops.
+        
+        Args:
+            device: Target device
+            value_u64: Unsigned 64-bit value
+            
+        Returns:
+            Scalar LongTensor on specified device
+        """
+        import torch
+        key = (device, value_u64)
+        if key not in self._const_cache:
+            self._const_cache[key] = torch.tensor(
+                u64_to_i64(value_u64), dtype=torch.long, device=device
+            )
+        return self._const_cache[key]
+    
     def _mix64_tensor(self, x: "torch.LongTensor") -> "torch.LongTensor":
         """Vectorized 64-bit mixing function based on SplitMix64.
 
@@ -395,6 +437,42 @@ class FeistelPRP:
         half_mask = (1 << half_bits) - 1
         return mixed & half_mask
 
+    def _round_function_tensor_key(
+        self, r: "torch.LongTensor", round_idx: int, key_t: "torch.LongTensor"
+    ) -> "torch.LongTensor":
+        """Vectorized Feistel round function F with tensor key.
+        
+        F(r, round_idx, key_t) = lower_half_bits(mix64(r ^ key_t ^ round_constant ^ master_key))
+        
+        Args:
+            r: Right half input tensor (any shape, broadcastable with key_t)
+            round_idx: Current round index (0-based)
+            key_t: Per-item key tensor (broadcastable to r, e.g., [T,H,1] or [T,H,K])
+            
+        Returns:
+            Round function output tensor (lower half bits, same shape as r)
+        """
+        import torch
+        device = r.device
+        
+        # Get round constant and master key as cached scalar tensors
+        round_const_u64 = self._get_round_constant(round_idx) & 0xFFFFFFFFFFFFFFFF
+        master_u64 = self.master_key & 0xFFFFFFFFFFFFFFFF
+        
+        round_const_t = self._const_i64_tensor(device, round_const_u64)
+        master_t = self._const_i64_tensor(device, master_u64)
+        
+        # Combine: r ^ key_t ^ round_const ^ master_key
+        combined = (r ^ key_t ^ round_const_t ^ master_t) & (-1)  # Mask to uint64
+        
+        # Apply mixing
+        mixed = self._mix64_tensor(combined)
+        
+        # Extract lower half bits
+        half_bits = (self.nbits + 1) // 2
+        half_mask = (1 << half_bits) - 1
+        return mixed & half_mask
+
     def permute_tensor(
         self, x: "torch.LongTensor", key: int
     ) -> "torch.LongTensor":
@@ -450,6 +528,118 @@ class FeistelPRP:
         # Final swap (after all rounds)
         left, right = right, left
 
+        # Combine and mask to domain
+        result = self._combine_tensor(left, right)
+        return result & domain_mask
+
+    def permute_tensor_key(
+        self, x: "torch.LongTensor", key_t: "torch.LongTensor"
+    ) -> "torch.LongTensor":
+        """Vectorized PRP permutation with tensor key.
+        
+        Applies PRP permutation to each element of input tensor in parallel.
+        Key is a tensor that broadcasts across x (e.g., [T,H,1] for [T,H,K] x).
+        
+        Args:
+            x: Input tensor of values in [0, 2**nbits) (e.g., [T,H,K])
+            key_t: Key tensor broadcastable to x (e.g., [T,H,1])
+            
+        Returns:
+            Permuted tensor of same shape as x
+        """
+        import torch
+        
+        # Validate inputs
+        if not isinstance(x, torch.Tensor):
+            raise TypeError(f"x must be torch.LongTensor, got {type(x)}")
+        if x.dtype != torch.long:
+            raise TypeError(f"x must be torch.long dtype, got {x.dtype}")
+        if not isinstance(key_t, torch.Tensor):
+            raise TypeError(f"key_t must be torch.LongTensor, got {type(key_t)}")
+        if key_t.dtype != torch.long:
+            raise TypeError(f"key_t must be torch.long dtype, got {key_t.dtype}")
+        
+        # Mask x to domain
+        domain_mask = (1 << self.nbits) - 1
+        x = x & domain_mask
+        
+        # Split into halves
+        left, right = self._split_tensor(x)
+        
+        # Apply Feistel rounds (same structure as permute_tensor, but use _round_function_tensor_key)
+        for round_idx in range(self.rounds):
+            f_out = self._round_function_tensor_key(right, round_idx, key_t)
+            new_right = left ^ f_out
+            left = right
+            right = new_right
+            
+            # Mask to half sizes
+            left_bits = self.nbits // 2
+            right_bits = (self.nbits + 1) // 2
+            left_mask = (1 << left_bits) - 1
+            right_mask = (1 << right_bits) - 1
+            left = left & left_mask
+            right = right & right_mask
+        
+        # Final swap
+        left, right = right, left
+        
+        # Combine and mask to domain
+        result = self._combine_tensor(left, right)
+        return result & domain_mask
+
+    def permute_tensor_key(
+        self, x: "torch.LongTensor", key_t: "torch.LongTensor"
+    ) -> "torch.LongTensor":
+        """Vectorized PRP permutation with tensor key.
+        
+        Applies PRP permutation to each element of input tensor in parallel.
+        Key is a tensor that broadcasts across x (e.g., [T,H,1] for [T,H,K] x).
+        
+        Args:
+            x: Input tensor of values in [0, 2**nbits) (e.g., [T,H,K])
+            key_t: Key tensor broadcastable to x (e.g., [T,H,1])
+            
+        Returns:
+            Permuted tensor of same shape as x
+        """
+        import torch
+        
+        # Validate inputs
+        if not isinstance(x, torch.Tensor):
+            raise TypeError(f"x must be torch.LongTensor, got {type(x)}")
+        if x.dtype != torch.long:
+            raise TypeError(f"x must be torch.long dtype, got {x.dtype}")
+        if not isinstance(key_t, torch.Tensor):
+            raise TypeError(f"key_t must be torch.LongTensor, got {type(key_t)}")
+        if key_t.dtype != torch.long:
+            raise TypeError(f"key_t must be torch.long dtype, got {key_t.dtype}")
+        
+        # Mask x to domain
+        domain_mask = (1 << self.nbits) - 1
+        x = x & domain_mask
+        
+        # Split into halves
+        left, right = self._split_tensor(x)
+        
+        # Apply Feistel rounds (same structure as permute_tensor, but use _round_function_tensor_key)
+        for round_idx in range(self.rounds):
+            f_out = self._round_function_tensor_key(right, round_idx, key_t)
+            new_right = left ^ f_out
+            left = right
+            right = new_right
+            
+            # Mask to half sizes
+            left_bits = self.nbits // 2
+            right_bits = (self.nbits + 1) // 2
+            left_mask = (1 << left_bits) - 1
+            right_mask = (1 << right_bits) - 1
+            left = left & left_mask
+            right = right & right_mask
+        
+        # Final swap
+        left, right = right, left
+        
         # Combine and mask to domain
         result = self._combine_tensor(left, right)
         return result & domain_mask

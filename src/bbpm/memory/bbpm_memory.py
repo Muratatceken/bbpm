@@ -196,20 +196,55 @@ class BBPMMemory(nn.Module):
         return result
 
     def write_batch(self, hx_tensor: "torch.LongTensor", values: "torch.Tensor") -> None:
-        """Write a batch of values to memory.
+        """Write a batch of values to memory (fully vectorized).
         
         Args:
             hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
             values: Tensor of shape [T, d] containing values to write
         """
+        import torch
+        
+        # Ensure tensors are on correct device
+        device = torch.device(self.cfg.device)
+        hx_tensor = hx_tensor.to(device=device, dtype=torch.long)
+        values = values.to(device=device)
+        
+        # Normalize values: [T, d]
+        if self.cfg.normalize_values == "l2":
+            values = values / (torch.norm(values, p=2, dim=1, keepdim=True) + self.eps)
+        elif self.cfg.normalize_values == "rms":
+            rms = torch.sqrt(torch.mean(values**2, dim=1, keepdim=True)) + self.eps
+            values = values / rms
+        # "none" mode: no normalization
+        
+        # Compute all addresses at once: [T, H*K]
+        addr_tensor = self.addresser.addresses_batch(hx_tensor, device)  # [T, H*K]
+        
+        # Flatten addresses: [T*H*K]
+        addr_flat = addr_tensor.reshape(-1)  # [T*H*K]
+        
+        # Expand values: [T, d] -> [T, H*K, d] -> [T*H*K, d]
         T = hx_tensor.shape[0]
-        for i in range(T):
-            hx = int(hx_tensor[i].item())
-            v = values[i]
-            self.write(hx, v)
+        H = self.cfg.H
+        K = self.cfg.K
+        values_expanded = values[:, None, :].expand(T, H * K, -1).reshape(-1, self.cfg.key_dim)  # [T*H*K, d]
+        
+        # Single index_add_ operation (GPU-accelerated)
+        if self.dtype == torch.float32:
+            self.memory.index_add_(0, addr_flat, values_expanded)
+        elif self.dtype == torch.bfloat16:
+            if self.cfg.accumulate == "fast_inexact":
+                self.memory.index_add_(0, addr_flat, values_expanded.to(self.dtype))
+            else:
+                raise ValueError("bfloat16 requires accumulate='fast_inexact'")
+        
+        # Update counts if count_normalized mode
+        if self.counts is not None:
+            ones = torch.ones(T * H * K, 1, dtype=torch.float32, device=device)
+            self.counts.index_add_(0, addr_flat, ones)
 
     def read_batch(self, hx_tensor: "torch.LongTensor") -> "torch.Tensor":
-        """Read a batch of values from memory.
+        """Read a batch of values from memory (fully vectorized).
         
         Args:
             hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
@@ -217,13 +252,44 @@ class BBPMMemory(nn.Module):
         Returns:
             Tensor of shape [T, d] containing retrieved values
         """
+        import torch
+        
+        # Ensure tensor is on correct device
+        device = torch.device(self.cfg.device)
+        hx_tensor = hx_tensor.to(device=device, dtype=torch.long)
+        
+        # Compute all addresses at once: [T, H*K]
+        addr_tensor = self.addresser.addresses_batch(hx_tensor, device)  # [T, H*K]
+        
+        # Flatten addresses: [T*H*K]
+        addr_flat = addr_tensor.reshape(-1)  # [T*H*K]
+        
+        # Gather values: [T*H*K, d]
+        gathered_flat = self.memory[addr_flat]  # [T*H*K, d]
+        
+        # Reshape to [T, H*K, d]
         T = hx_tensor.shape[0]
-        results = []
-        for i in range(T):
-            hx = int(hx_tensor[i].item())
-            r = self.read(hx)
-            results.append(r)
-        return torch.stack(results, dim=0)
+        H = self.cfg.H
+        K = self.cfg.K
+        gathered = gathered_flat.reshape(T, H * K, self.cfg.key_dim)  # [T, H*K, d]
+        
+        # Apply count normalization if needed
+        if self.cfg.read_mode == "count_normalized" and self.counts is not None:
+            counts_flat = self.counts[addr_flat]  # [T*H*K, 1]
+            counts = counts_flat.reshape(T, H * K, 1)  # [T, H*K, 1]
+            counts_safe = torch.clamp(counts, min=1.0)
+            gathered = gathered / counts_safe
+        
+        # Mean over H*K addresses: [T, H*K, d] -> [T, d]
+        result = gathered.mean(dim=1)  # [T, d]
+        
+        # Convert to output dtype
+        output_dtype_map = {
+            "float32": torch.float32,
+            "bfloat16": torch.bfloat16,
+        }
+        output_dtype = output_dtype_map[self.cfg.output_dtype]
+        return result.to(output_dtype)
 
     def reset(self) -> None:
         """Reset memory to initial state (clear all contents)."""

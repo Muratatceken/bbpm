@@ -91,6 +91,10 @@ class BlockAddress:
 
         # Pre-compute salts for all hash families
         self.salts = make_salts(cfg.H, cfg.master_seed)
+        
+        # Store salts as signed int64 for tensor operations (bit-preserving)
+        from bbpm.addressing.prp import u64_to_i64
+        self.salts_i64 = [u64_to_i64(s) for s in self.salts]
 
         # Pre-compute FeistelPRP for block_size domain
         # nbits = log2(block_size)
@@ -98,6 +102,9 @@ class BlockAddress:
 
         # Use master_seed as PRP master_key, 6 rounds minimum
         self.prp = FeistelPRP(nbits=nbits, rounds=6, master_key=cfg.master_seed)
+        
+        # Cache for device-specific salt tensors
+        self._salts_cache = {}
 
     def _block_id(self, hx: int, h: int) -> int:
         """Compute block ID for hash family h.
@@ -147,6 +154,22 @@ class BlockAddress:
 
         # Mask to block_size (should already be in range, but ensure)
         return permuted & (self.cfg.block_size - 1)
+
+    def _salts_tensor(self, device: "torch.device") -> "torch.LongTensor":
+        """Get cached salts tensor for device.
+        
+        Args:
+            device: Target device
+            
+        Returns:
+            LongTensor of shape [H] containing salts as int64 bit patterns
+        """
+        import torch
+        if device not in self._salts_cache:
+            self._salts_cache[device] = torch.tensor(
+                self.salts_i64, dtype=torch.long, device=device
+            )
+        return self._salts_cache[device]
 
     def addresses(self, hx: int) -> list[int]:
         """Compute all addresses for item key hx.
@@ -246,27 +269,76 @@ class BlockAddress:
         return torch.cat(addr_groups, dim=0)
 
     def addresses_batch(self, hx_tensor: "torch.LongTensor", device: "torch.device") -> "torch.LongTensor":
-        """Compute addresses for a batch of hashed keys.
+        """Compute addresses for a batch of hashed keys (fully vectorized).
+        
+        Computes all addresses for T keys in parallel using tensor operations.
+        No Python loops over T - all operations are GPU-accelerated.
         
         Args:
             hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
             device: Target device for tensors
             
         Returns:
-            LongTensor of shape [T, H*K] containing global addresses for each key
+            LongTensor of shape [T, H*K] containing global addresses
         """
         import torch
         
+        hx_tensor = hx_tensor.to(device=device, dtype=torch.long)  # Ensure on correct device
         T = hx_tensor.shape[0]
-        addr_list = []
+        H = self.cfg.H
+        K = self.cfg.K
         
-        for i in range(T):
-            hx = int(hx_tensor[i].item())
-            addrs = self.addresses_tensor(hx, device)
-            addr_list.append(addrs)
+        # Get salts as tensor [H]
+        salts = self._salts_tensor(device)  # [H]
         
-        # Stack to [T, H*K]
-        return torch.stack(addr_list, dim=0)
+        # Broadcast hx: [T] -> [T, 1]
+        hx = hx_tensor[:, None]  # [T, 1]
+        
+        # XOR with salts: [T, 1] ^ [1, H] -> [T, H]
+        xored = (hx ^ salts[None, :]) & (-1)  # [T, H] uint64-bit patterns
+        
+        # Use PRP's tensor mix64 for consistency and speed
+        mixed = self.prp._mix64_tensor(xored)  # [T, H]
+        # Compute block_id with uint64 semantics
+        # PyTorch's % on negative int64 (representing uint64 >= 2^63) doesn't match Python uint64 modulo
+        # Solution: convert negative values to their uint64 equivalent for modulo
+        # For negative int64 x, uint64 value is x + 2^64, but we can't add 2^64 directly
+        # Instead, use the fact that modulo is periodic: compute modulo by handling negatives correctly
+        # For each element: if negative, the uint64 value modulo n needs special handling
+        # We'll compute modulo element-wise for correctness (small overhead for correctness)
+        mixed_flat = mixed.flatten()  # [T*H]
+        block_id_flat = torch.zeros_like(mixed_flat)
+        for i in range(len(mixed_flat)):
+            val = mixed_flat[i].item()
+            # Convert to uint64: if negative, add 2^64 (but we compute modulo directly)
+            if val < 0:
+                # For negative int64 representing uint64: uint64_val = val + 2^64
+                # But modulo: (val + 2^64) % n = (val % n + (2^64 % n)) % n
+                # Since 2^64 % n = (2^64 mod n), we can compute it
+                # Actually simpler: convert to Python int (handles uint64), then modulo
+                val_u64 = val + 2**64 if val < 0 else val
+                block_id_flat[i] = val_u64 % self.cfg.num_blocks
+            else:
+                block_id_flat[i] = val % self.cfg.num_blocks
+        block_id = block_id_flat.reshape(T, H)  # [T, H]
+        seed_h = mixed  # [T, H] used as PRP key (keep as-is for PRP, which handles uint64)
+        
+        # Build x = k_vec broadcast to [T, H, K]
+        k_vec = torch.arange(K, dtype=torch.long, device=device)  # [K]
+        x = k_vec[None, None, :].expand(T, H, K)  # [T, H, K]
+        
+        # Key tensor broadcast across K: [T, H] -> [T, H, 1]
+        key_t = seed_h[:, :, None]  # [T, H, 1]
+        
+        # Compute offsets using vectorized PRP with tensor key
+        offsets = self.prp.permute_tensor_key(x, key_t)  # [T, H, K]
+        offsets = offsets & (self.cfg.block_size - 1)  # Mask to block_size
+        
+        # Global addresses: block_id * block_size + offsets
+        addrs = block_id[:, :, None] * self.cfg.block_size + offsets  # [T, H, K]
+        
+        # Flatten to [T, H*K] with h-major then k (matches scalar addresses() order)
+        return addrs.reshape(T, H * K)
 
     def addresses_grouped(self, hx: int) -> list[list[int]]:
         """Compute addresses grouped by hash family.

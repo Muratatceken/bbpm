@@ -104,7 +104,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     
     total_configs = len(K_values) * len(H_values) * len(N_values)
     print(f"Running {num_seeds} seeds, {len(K_values)} K values, {len(H_values)} H values, {len(N_values)} N values each...")
-    print(f"  Total configurations per seed: {len(K_values) * len(H_values) * len(N_values)}")
+    print(f"  Total configurations per seed: {total_configs}")
     
     # Run trials
     for seed_idx, seed in enumerate(seeds):
@@ -112,14 +112,6 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         seed_everything(seed)
         
         config_count = 0
-        for K in K_values:
-            for H in H_values:
-                for N in N_values:
-                    config_count += 1
-                    if config_count % 10 == 0 or config_count == 1:
-                        print(f"    Config {config_count}/{total_configs} (K={K}, H={H}, N={N})...", end=" ", flush=True)
-        seed_everything(seed)
-        
         for K in K_values:
             for H in H_values:
                 # Create memory config for this K, H
@@ -149,6 +141,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 mem = BBPMMemory(mem_cfg)
                 
                 for N in N_values:
+                    config_count += 1
+                    if config_count % 20 == 0 or config_count == 1 or config_count == total_configs:
+                        print(f"    Config {config_count}/{total_configs} (K={K}, H={H}, N={N})...", end=" ", flush=True)
                     mem.reset()
                     
                     # Generate deterministic keys using (seed, K, H, N) combination
@@ -233,8 +228,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "gini_skew": gini_skew,
                         "cosine": mean_cosine,
                     })
-                    if config_count % 10 == 0 or config_count == 1:
-                        print("done")
+                    if config_count % 20 == 0 or config_count == 1 or config_count == total_configs:
+                        print("done", flush=True)
     
     print("Summarizing results...")
     # Summarize across seeds using summarize_groups

@@ -78,12 +78,10 @@ def main():
         setattr(args, key, value)
     
     # Run experiment
-    print(f"Running {EXPERIMENTS[exp_id][0]} ({exp_id})...")
+    # Note: Each experiment module prints its own "Running..." message
     result = exp_module.run(args)
     
-    print(f"✓ {EXPERIMENTS[exp_id][0]} completed")
-    print(f"  Metrics: {result.get('metrics_path', 'N/A')}")
-    print(f"  Figure: {result.get('figure_path', 'N/A')}")
+    # Note: Each experiment module prints its own completion message
 
 
 if __name__ == "__main__":

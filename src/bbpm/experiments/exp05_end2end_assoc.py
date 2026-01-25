@@ -307,6 +307,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         test_targets = test_targets.to(device)
         
         # Model 1: Windowed Transformer
+        print(f"    Model 1/3: Windowed Transformer...", flush=True)
         # Window size should be large enough to see at least one (key, value) pair + query
         # Sequence format: [key1, val1, key2, val2, ..., query_key]
         # So window_size should be >= 3 to see at least one pair + query
@@ -321,7 +322,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         train_losses1 = []
         test_accs1 = []
         
-        for epoch in range(num_epochs):
+        for epoch_idx, epoch in enumerate(range(num_epochs)):
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                print(f"      Epoch {epoch_idx + 1}/{num_epochs}...", end=" ", flush=True)
             # Training
             model1.train()
             epoch_loss = 0
@@ -352,7 +355,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs1.append(correct / total)
+            if (epoch_idx + 1) % max(1, num_epochs // 5) == 0 or epoch_idx == 0:
+                avg_train_loss = train_losses1[-1]
+                test_acc = test_accs1[-1]
+                print(f"loss={avg_train_loss:.4f}, acc={test_acc:.4f}")
         
+        print(f"    Model 2/3: Transformer + External KV...", flush=True)
         # Model 2: Transformer + External KV
         # Adjust memory_size to match param count with BBPM
         # Target: roughly match model1 or model3 params

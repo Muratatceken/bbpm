@@ -94,6 +94,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    # Define fixed_distances here (used in both progress message and experiment 2)
+    fixed_distances = [0, 500]  # Two distances for stronger evidence
     total_trials = len(seeds) * (len(distance_values) + len(fixed_distances) * len(N_values))
     print(f"Running {len(seeds)} seeds, {len(distance_values)} distance values + {len(fixed_distances)} fixed distances × {len(N_values)} N values...")
     
@@ -178,7 +180,6 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 print("done")
         
         # === Experiment 2: Retrieval vs Load (fixed distances) ===
-        fixed_distances = [0, 500]  # Two distances for stronger evidence
         for fd_idx, fixed_distance in enumerate(fixed_distances):
             for n_idx, N in enumerate(N_values):
                 if (fd_idx == 0 and n_idx == 0) or (n_idx + 1) % 3 == 0:

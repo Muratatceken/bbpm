@@ -142,7 +142,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 
                 for N in N_values:
                     config_count += 1
-                    if config_count % 20 == 0 or config_count == 1 or config_count == total_configs:
+                    should_print = (config_count % 20 == 0 or config_count == 1 or config_count == total_configs)
+                    if should_print:
                         print(f"    Config {config_count}/{total_configs} (K={K}, H={H}, N={N})...", end=" ", flush=True)
                     mem.reset()
                     
@@ -228,7 +229,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "gini_skew": gini_skew,
                         "cosine": mean_cosine,
                     })
-                    if config_count % 20 == 0 or config_count == 1 or config_count == total_configs:
+                    if should_print:
                         print("done", flush=True)
     
     print("Summarizing results...")

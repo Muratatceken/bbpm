@@ -92,6 +92,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running Occupancy Skew (exp06)...")
+    
     device = ensure_device(args.device)
     dtype_str = args.dtype
     num_seeds = args.seeds
@@ -133,12 +135,17 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    print(f"Running {len(seeds)} seeds, {len(s_values)} s values + uniform + token-ID modes...")
+    
     # Run trials
-    for seed in seeds:
+    for seed_idx, seed in enumerate(seeds):
+        print(f"  Seed {seed_idx + 1}/{len(seeds)} (seed={seed})...")
+        seed_everything(seed)
         seed_everything(seed)
         mem = BBPMMemory(mem_cfg)
         
         # Mode 1: Uniform random keys
+        print("    Mode: uniform...", end=" ", flush=True)
         mem.reset()
         random.seed(seed)
         uniform_hx_list = [random.randint(0, 2**64 - 1) for _ in range(N)]
@@ -175,9 +182,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "collision_rate": collision_rate,
             "block_counts": occ_uniform["counts_per_block"],
         })
+        print("done")
         
         # Mode 2: Zipf-distributed keys
-        for s in s_values:
+        for s_idx, s in enumerate(s_values):
+            if s_idx == 0 or (s_idx + 1) % 2 == 0:
+                print(f"    Mode: zipf(s={s}) ({s_idx + 1}/{len(s_values)})...", end=" ", flush=True)
             mem.reset()
             zipf_token_ids = sample_zipf(vocab_size, N, s, seed)
             # Convert token IDs to hx (deterministic mapping using mix64)
@@ -222,8 +232,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "collision_rate": collision_rate,
                 "block_counts": occ_zipf["counts_per_block"],
             })
+            if s_idx == 0 or (s_idx + 1) % 2 == 0:
+                print("done")
         
         # Mode 3: Token-ID mode (seed-independent keying)
+        print("    Mode: token-ID...", end=" ", flush=True)
         mem.reset()
         if token_ids_path and Path(token_ids_path).exists():
             # Load from file

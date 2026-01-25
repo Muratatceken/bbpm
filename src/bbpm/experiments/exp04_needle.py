@@ -60,6 +60,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running Needle-in-Haystack (exp04)...")
+    
     device = ensure_device(args.device)
     dtype_str = args.dtype
     num_seeds = args.seeds
@@ -92,13 +94,19 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    total_trials = len(seeds) * (len(distance_values) + len(fixed_distances) * len(N_values))
+    print(f"Running {len(seeds)} seeds, {len(distance_values)} distance values + {len(fixed_distances)} fixed distances × {len(N_values)} N values...")
+    
     # Run trials
-    for seed in seeds:
+    for seed_idx, seed in enumerate(seeds):
+        print(f"  Seed {seed_idx + 1}/{len(seeds)} (seed={seed})...")
         seed_everything(seed)
         mem = BBPMMemory(mem_cfg)
         
         # === Experiment 1: Retrieval vs Distance (fixed N) ===
-        for distance in distance_values:
+        for d_idx, distance in enumerate(distance_values):
+            if d_idx == 0 or (d_idx + 1) % 3 == 0:
+                print(f"    Distance={distance} ({d_idx + 1}/{len(distance_values)})...", end=" ", flush=True)
             # Clamp distance to valid range [0, fixed_N] and skip invalid cases
             if distance < 0 or distance > fixed_N:
                 continue
@@ -166,11 +174,15 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "empirical_lambda": empirical_lambda,  # Final lambda after all writes
                 "occupancy": occupied_ratio,  # At query time
             })
+            if d_idx == 0 or (d_idx + 1) % 3 == 0:
+                print("done")
         
         # === Experiment 2: Retrieval vs Load (fixed distances) ===
         fixed_distances = [0, 500]  # Two distances for stronger evidence
-        for fixed_distance in fixed_distances:
-            for N in N_values:
+        for fd_idx, fixed_distance in enumerate(fixed_distances):
+            for n_idx, N in enumerate(N_values):
+                if (fd_idx == 0 and n_idx == 0) or (n_idx + 1) % 3 == 0:
+                    print(f"    Load: distance={fixed_distance}, N={N} ({fd_idx * len(N_values) + n_idx + 1}/{len(fixed_distances) * len(N_values)})...", end=" ", flush=True)
                 # Clamp distance to valid range [0, N] and skip invalid cases
                 if fixed_distance < 0 or fixed_distance > N:
                     continue

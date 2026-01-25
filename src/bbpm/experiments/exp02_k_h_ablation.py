@@ -81,6 +81,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running K/H Ablation (exp02)...")
+    
     device = ensure_device(args.device)
     dtype_str = args.dtype
     num_seeds = args.seeds
@@ -100,8 +102,22 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    total_configs = len(K_values) * len(H_values) * len(N_values)
+    print(f"Running {num_seeds} seeds, {len(K_values)} K values, {len(H_values)} H values, {len(N_values)} N values each...")
+    print(f"  Total configurations per seed: {len(K_values) * len(H_values) * len(N_values)}")
+    
     # Run trials
-    for seed in seeds:
+    for seed_idx, seed in enumerate(seeds):
+        print(f"  Seed {seed_idx + 1}/{num_seeds} (seed={seed})...")
+        seed_everything(seed)
+        
+        config_count = 0
+        for K in K_values:
+            for H in H_values:
+                for N in N_values:
+                    config_count += 1
+                    if config_count % 10 == 0 or config_count == 1:
+                        print(f"    Config {config_count}/{total_configs} (K={K}, H={H}, N={N})...", end=" ", flush=True)
         seed_everything(seed)
         
         for K in K_values:
@@ -217,6 +233,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "gini_skew": gini_skew,
                         "cosine": mean_cosine,
                     })
+                    if config_count % 10 == 0 or config_count == 1:
+                        print("done")
     
     # Summarize across seeds using summarize_groups
     summary = summarize_groups(

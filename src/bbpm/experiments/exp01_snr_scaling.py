@@ -48,6 +48,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running SNR Scaling (exp01)...")
+    
     # Extract config
     device = ensure_device(args.device)
     dtype_str = args.dtype
@@ -81,6 +83,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     raw_trials = []
     
     print(f"Running {len(seeds)} seeds, {len(N_values)} N values each...")
+    
+    print(f"Running {num_seeds} seeds, {len(N_values)} N values each...")
     
     # Run trials
     for seed_idx, seed in enumerate(seeds):

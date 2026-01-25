@@ -144,6 +144,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running Drift and Reachability (exp07)...")
+    
     device = ensure_device(args.device)
     dtype_str = args.dtype
     num_seeds = args.seeds
@@ -178,8 +180,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    print(f"Running {len(seeds)} seeds, {num_steps} steps each, 3 keying modes...")
+    
     # Run trials
-    for seed in seeds:
+    for seed_idx, seed in enumerate(seeds):
+        print(f"  Seed {seed_idx + 1}/{len(seeds)} (seed={seed})...")
+        seed_everything(seed)
         seed_everything(seed)
         mem = BBPMMemory(mem_cfg)
         
@@ -192,6 +198,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         early_token_ids = list(range(num_early_items))
         
         # Mode 1: Token-ID keying (stable)
+        print("    Mode: token-ID...", end=" ", flush=True)
         mem.reset()
         token_hx_list_initial = [token_id_keying(tid, seed) for tid in early_token_ids]
         # Write initial items (batch operation)
@@ -224,8 +231,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             
             # Key change rate (always 0 for token-ID, keys don't change)
             key_change_rate_token.append(0.0)
+        print("done")
         
         # Mode 2: Frozen projection keying (multi-bit sign-hash)
+        print("    Mode: frozen projection...", end=" ", flush=True)
         mem.reset()
         # Create frozen projection W: [bits, d] where bits=64
         bits = 64
@@ -277,8 +286,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             success = (cosines >= reachability_threshold).float()
             reachability = success.mean().item()
             reachability_frozen.append(reachability)
+        print("done")
         
         # Mode 3: Trainable projection keying (drifts)
+        print("    Mode: trainable projection...", end=" ", flush=True)
         mem.reset()
         # Create trainable projection W: [bits, d] where bits=64
         bits = 64

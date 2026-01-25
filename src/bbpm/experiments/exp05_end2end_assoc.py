@@ -243,6 +243,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     Returns:
         Dictionary with metrics_path and figure_path
     """
+    print("Running End-to-End Associative Recall (exp05)...")
+    
     device = ensure_device(args.device)
     dtype_str = args.dtype
     num_seeds = args.seeds

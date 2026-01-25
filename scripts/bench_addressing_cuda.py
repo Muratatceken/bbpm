@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root / "src"))
 import torch
 
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
+from bbpm.addressing.prp import u64_to_i64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.utils.seeds import seed_everything
@@ -285,7 +286,9 @@ def main():
         
         # Generate test data
         hx_list = [random.randint(0, 2**64 - 1) for _ in range(T)]
-        hx_tensor = torch.tensor(hx_list, dtype=torch.long, device=device)
+        # Convert uint64 to int64 representation for PyTorch (handles values >= 2^63)
+        hx_list_i64 = [u64_to_i64(hx) for hx in hx_list]
+        hx_tensor = torch.tensor(hx_list_i64, dtype=torch.long, device=device)
         values = torch.randn(T, d, device=device)
         
         # Benchmark addresses_batch

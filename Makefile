@@ -14,15 +14,14 @@ test:
 
 # Paper-grade configurations (for ICML submission)
 # Canonical memory config: B=16384, L=256, H=4, K=32, d=64, seeds=10
-# Note: Using CUDA for most experiments (2-5x speedup), except Exp02 where overhead may outweigh benefit
-# Expected total runtime: ~1.5-2 hours (vs ~5-8 hours on CPU)
+# Note: All experiments now use CUDA with vectorized batch operations (10-100x speedup)
+# Expected total runtime: ~1-1.5 hours (vs ~5-8 hours on CPU)
 experiments-paper:
 	@echo "Running all experiments with paper-grade configurations (CUDA-accelerated)..."
 	@echo "Exp01: SNR scaling (CUDA, seeds=10, N=[2k,4k,8k,16k,32k,48k,64k,80k])"
 	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp01 --device cuda --seeds 10 --N_values 2000 4000 8000 16000 32000 48000 64000 80000 || exit 1
-	@echo "Exp02: K/H ablation (CPU, seeds=10, N=[2k,8k,16k,32k,48k])"
-	@echo "  Note: Using CPU due to many small trials where GPU overhead may reduce benefit"
-	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 10 --N_values 2000 8000 16000 32000 48000 || exit 1
+	@echo "Exp02: K/H ablation (CUDA, seeds=10, N=[2k,8k,16k,32k,48k])"
+	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp02 --device cuda --seeds 10 --N_values 2000 8000 16000 32000 48000 || exit 1
 	@echo "Exp03: Runtime vs Attention (CUDA, seeds=1, T=[256,512,1024,2048,4096], d_model=256, num_heads=8)"
 	@PYTHONPATH=src python -m bbpm.experiments.run --exp exp03 --device cuda --seeds 1 --T_values 256 512 1024 2048 4096 --d_model 256 --num_heads 8 || exit 1
 	@echo "Exp04: Needle-in-haystack (CUDA, seeds=10, fixed_N=32k, distance=[0,128,512,2048,8192,16384,32768], N=[2k,8k,16k,32k,48k,64k,80k])"

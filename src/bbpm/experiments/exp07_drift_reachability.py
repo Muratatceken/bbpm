@@ -359,6 +359,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     steps = list(range(num_steps))
     
     for mode in ["token_id", "frozen_proj", "trainable_proj"]:
+        # Aggregate reachability
         mode_key = f"{mode}_reachability"
         reachability_by_step = {step: [] for step in steps}
         
@@ -391,6 +392,64 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "ci95_high": step_highs,
             }
         }
+        
+        # Aggregate key_change_rate
+        kcr_key = f"{mode}_key_change_rate"
+        if kcr_key in raw_trials[0]:  # Check if this metric exists for this mode
+            kcr_by_step = {step: [] for step in steps}
+            
+            for trial in raw_trials:
+                for step, kcr in zip(trial["steps"], trial[kcr_key]):
+                    kcr_by_step[step].append(kcr)
+            
+            kcr_means = []
+            kcr_lows = []
+            kcr_highs = []
+            for step in steps:
+                if kcr_by_step[step]:
+                    stats = mean_ci95(kcr_by_step[step])
+                    kcr_means.append(stats["mean"])
+                    kcr_lows.append(stats["ci95_low"])
+                    kcr_highs.append(stats["ci95_high"])
+                else:
+                    kcr_means.append(0)
+                    kcr_lows.append(0)
+                    kcr_highs.append(0)
+            
+            summary[mode]["key_change_rate"] = {
+                "mean": kcr_means,
+                "ci95_low": kcr_lows,
+                "ci95_high": kcr_highs,
+            }
+        
+        # Aggregate hamming_distance (only for projection modes)
+        hamming_key = f"{mode}_hamming"
+        if hamming_key in raw_trials[0]:  # Check if this metric exists for this mode
+            hamming_by_step = {step: [] for step in steps}
+            
+            for trial in raw_trials:
+                for step, hamming in zip(trial["steps"], trial[hamming_key]):
+                    hamming_by_step[step].append(hamming)
+            
+            hamming_means = []
+            hamming_lows = []
+            hamming_highs = []
+            for step in steps:
+                if hamming_by_step[step]:
+                    stats = mean_ci95(hamming_by_step[step])
+                    hamming_means.append(stats["mean"])
+                    hamming_lows.append(stats["ci95_low"])
+                    hamming_highs.append(stats["ci95_high"])
+                else:
+                    hamming_means.append(0)
+                    hamming_lows.append(0)
+                    hamming_highs.append(0)
+            
+            summary[mode]["hamming_distance"] = {
+                "mean": hamming_means,
+                "ci95_low": hamming_lows,
+                "ci95_high": hamming_highs,
+            }
     
     # Generate figure with 3 panels
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
@@ -432,21 +491,25 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     ax2.legend()
     
     # Panel 3: Hamming distance vs step (for sign-hash modes)
+    has_data = False
     for mode, label in [
         ("frozen_proj", "Frozen Projection Keying"),
         ("trainable_proj", "Trainable Projection Keying (Drifts)"),
     ]:
         if mode in summary and "hamming_distance" in summary[mode]:
             means = summary[mode]["hamming_distance"]["mean"]
-            lows = summary[mode]["hamming_distance"]["ci95_low"]
-            highs = summary[mode]["hamming_distance"]["ci95_high"]
-            plot_line_with_ci(ax3, steps, means, lows, highs, label=label, linestyle="-")
+            if any(m > 0 for m in means):  # Only plot if there's actual data
+                lows = summary[mode]["hamming_distance"]["ci95_low"]
+                highs = summary[mode]["hamming_distance"]["ci95_high"]
+                plot_line_with_ci(ax3, steps, means, lows, highs, label=label, linestyle="-")
+                has_data = True
     
     ax3.set_xlabel("Training Step")
     ax3.set_ylabel("Mean Hamming Distance")
     ax3.set_title("Mean Hamming Distance vs Training Step")
     ax3.grid(True, alpha=0.3)
-    ax3.legend()
+    if has_data:
+        ax3.legend()
     
     add_footer(fig, EXP_ID)
     

@@ -153,7 +153,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         # Generate random keys for BBPM as tensor
         import random
         random.seed(42)
-        hx_list = [random.randint(0, 2**64 - 1) for _ in range(T)]
+        # Generate uint64 values but use int64 tensor (values < 2^63 are safe)
+        hx_list = [random.randint(0, 2**63 - 1) for _ in range(T)]
         hx_tensor = torch.tensor(hx_list, dtype=torch.long, device=device)
         values = torch.randn(T, d_model, device=device)
         if dtype_str == "bfloat16":

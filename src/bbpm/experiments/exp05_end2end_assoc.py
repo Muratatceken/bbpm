@@ -14,6 +14,7 @@ import torch.optim as optim
 from bbpm.addressing.hash_mix import mix64, u64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
+from bbpm.metrics.stats import mean_ci95
 from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
@@ -45,13 +46,13 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--vocab_size",
         type=int,
-        default=1000,
+        default=100,  # Reduced from 1000 to make task learnable (chance = 1/100 = 0.01)
         help="Vocabulary size",
     )
     parser.add_argument(
         "--d_model",
         type=int,
-        default=64,
+        default=128,  # Increased from 64 to increase model capacity
         help="Model dimension",
     )
     parser.add_argument(
@@ -143,12 +144,12 @@ class WindowedTransformer(nn.Module):
         # Embed tokens
         x_emb = self.embedding(x)  # [batch, T, d_model]
         # Use last window_size tokens
-        x_window = x_emb[:, -self.window_size:, :]
-        # [window_size, batch, d_model]
-        x_window = x_window.transpose(0, 1)
-        out = self.transformer(x_window)
-        # Use last token
-        return self.classifier(out[-1].transpose(0, 1))  # [batch, vocab_size]
+        x_window = x_emb[:, -self.window_size:, :]  # [batch, window_size, d_model]
+        # Transformer expects [seq_len, batch, d_model]
+        x_window = x_window.transpose(0, 1)  # [window_size, batch, d_model]
+        out = self.transformer(x_window)  # [window_size, batch, d_model]
+        # Use last token: out[-1] is [batch, d_model]
+        return self.classifier(out[-1])  # [batch, vocab_size]
 
 
 class TransformerWithExternalKV(nn.Module):
@@ -187,7 +188,7 @@ class BBPMAssociativeModel(nn.Module):
     def __init__(self, embedding: nn.Embedding, d_model: int, mem_cfg: MemoryConfig, vocab_size: int):
         super().__init__()
         self.embedding = embedding
-        self.mem = BBPMMemory(mem_cfg)
+        self.mem_cfg = mem_cfg  # Store config, create memory per forward
         self.classifier = nn.Linear(d_model, vocab_size)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -195,34 +196,36 @@ class BBPMAssociativeModel(nn.Module):
         # Embed tokens
         x_emb = self.embedding(x)  # [batch, T, d_model]
         
-        # Write sequence to memory
-        self.mem.reset()
         batch_size = x.shape[0]
         T = x.shape[1]
         
+        # Create fresh memory instance for this forward pass to avoid graph issues
+        mem = BBPMMemory(self.mem_cfg)
+        
         # Process each sequence in batch
+        retrieved_list = []
         for b in range(batch_size):
+            # Reset memory for each sequence
+            mem.reset()
+            
             # Write (key, value) pairs: even indices are keys, odd are values
             for t in range(0, T - 1, 2):  # Step by 2 for pairs
                 if t + 1 < T - 1:  # Ensure we have a pair
                     key_id = int(x[b, t].item())
                     val_id = int(x[b, t + 1].item())
-                    val_emb = x_emb[b, t + 1]
+                    val_emb = x_emb[b, t + 1]  # Keep gradients for learnable embeddings
                     
-                    # Use token ID keying: hx = mix64(u64(token_id))
-                    hx = mix64(u64(key_id))
-                    self.mem.write(hx, val_emb)
-        
-        # Retrieve using query (last token)
-        retrieved = []
-        for b in range(batch_size):
+                    # Use token ID keying with master_seed for stability: hx = mix64(u64(token_id) ^ u64(master_seed))
+                    hx = mix64(u64(key_id) ^ u64(self.mem_cfg.master_seed))
+                    mem.write(hx, val_emb)
+            
+            # Retrieve using query (last token)
             query_id = int(x[b, -1].item())
-            # Use same keying for query
-            hx = mix64(u64(query_id))
-            r = self.mem.read(hx)
-            retrieved.append(r)
+            hx = mix64(u64(query_id) ^ u64(self.mem_cfg.master_seed))
+            r = mem.read(hx)
+            retrieved_list.append(r)
         
-        retrieved_tensor = torch.stack(retrieved)  # [batch, d_model]
+        retrieved_tensor = torch.stack(retrieved_list)  # [batch, d_model]
         return self.classifier(retrieved_tensor)  # [batch, vocab_size]
 
 
@@ -252,7 +255,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     d_model = args.d_model
     num_heads = 4
     num_epochs = args.num_epochs
-    lr = 1e-3
+    lr = 1e-3  # Learning rate - may need tuning if models don't learn
+    
+    # Increase learning rate slightly for better learning
+    # But keep it reasonable to avoid instability
+    if vocab_size <= 100:
+        lr = 2e-3  # Slightly higher LR for smaller vocab (easier task)
     
     # BBPM memory configuration
     B = 2**12  # 4096 blocks
@@ -280,7 +288,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         seed_everything(seed)
         
         # Create shared embedding layer
+        # NOTE: Embeddings are trainable (not fixed) to allow models to learn token representations
+        # This is a design choice for the associative recall task - embeddings learn to encode
+        # semantic relationships between keys and values.
         embedding = nn.Embedding(vocab_size, d_model).to(device)
+        # Embeddings are trainable by default - this allows models to learn better representations
         
         # Generate train/test data with separate RNG
         train_seqs, train_targets = generate_batch(
@@ -295,7 +307,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         test_targets = test_targets.to(device)
         
         # Model 1: Windowed Transformer
-        window_size = 16
+        # Window size should be large enough to see at least one (key, value) pair + query
+        # Sequence format: [key1, val1, key2, val2, ..., query_key]
+        # So window_size should be >= 3 to see at least one pair + query
+        # Use larger window to see more context
+        window_size = min(32, T)  # Window size up to sequence length, but at least see query
         model1 = WindowedTransformer(embedding, d_model, num_heads, window_size, vocab_size).to(device)
         param_count1 = count_parameters(model1)
         
@@ -574,7 +590,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     write_metrics_json(
         metrics_path,
         EXP_ID,
-        "End-to-end associative recall",
+        "End-to-end associative recall. Task: Given sequence of (key, value) pairs as token IDs, "
+        "retrieve value token ID for query key. Uses stable keying: hx = mix64(u64(token_id) ^ u64(master_seed)). "
+        "Embeddings are trainable to allow models to learn token representations.",
         config_dict,
         seeds,
         raw_trials,

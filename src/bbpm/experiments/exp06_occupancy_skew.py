@@ -51,7 +51,10 @@ def sample_zipf(vocab_size: int, num_samples: int, s: float, seed: int) -> list[
 
 
 def add_args(parser: argparse.ArgumentParser) -> None:
-    """Add experiment-specific arguments."""
+    """Add experiment-specific arguments.
+    
+    Note: For paper runs, use --seeds 5 or more for statistical significance.
+    """
     parser.add_argument(
         "--N",
         type=int,

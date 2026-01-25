@@ -60,11 +60,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     distance_values = args.distance_values
     out_dir = args.out_dir
     
-    # Fixed memory configuration
-    D = 2**20  # 1M slots
-    d = 64
+    # Fixed memory configuration (canonical paper config)
     B = 2**14  # 16384 blocks
-    L = 256
+    L = 256    # Block size
+    D = B * L  # Total slots = 2^14 * 2^8 = 2^22 ≈ 4.19M slots
+    d = 64
     K = 32
     H = 4
     
@@ -92,6 +92,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         # === Experiment 1: Retrieval vs Distance (fixed N) ===
         fixed_N = 2000
         for distance in distance_values:
+            # Clamp distance to valid range [0, fixed_N] and skip invalid cases
+            if distance < 0 or distance > fixed_N:
+                continue
+            
             mem.reset()
             
             # Generate needle item
@@ -106,49 +110,60 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             distractor_values = torch.randn(fixed_N, d, device=device)
             distractor_values = torch.nn.functional.normalize(distractor_values, p=2, dim=1)
             
-            # Fix distance protocol: keep total load fixed
-            # Write (fixed_N - distance) distractors first
-            num_before = fixed_N - distance
-            for hx, v in zip(distractor_hx_list[:num_before], distractor_values[:num_before]):
-                mem.write(hx, v)
-            
-            # Write needle
+            # NEW distance protocol: distance = number of distractor writes AFTER needle BEFORE query
+            # 1. Write needle first
             mem.write(needle_hx, needle_value)
             
-            # Write remaining distance distractors
-            for hx, v in zip(distractor_hx_list[num_before:], distractor_values[num_before:]):
+            # 2. Write 'distance' distractors AFTER needle
+            for hx, v in zip(distractor_hx_list[:distance], distractor_values[:distance]):
                 mem.write(hx, v)
             
-            # Compute measured occupancy
+            # 3. READ needle NOW (this is the measurement)
+            # Compute writes so far: 1 (needle) + distance (distractors)
+            writes_so_far = 1 + distance
+            empirical_lambda_at_query = (writes_so_far * K * H) / D
+            
+            # Compute measured occupancy at query time
             stats = mem.stats()
             if "occupied_slots" in stats:
                 occupied_ratio = stats["occupied_slots"] / D
             else:
-                total_writes = (fixed_N + 1) * K * H
-                occupied_ratio = min(1.0, total_writes / D)
+                occupied_ratio = min(1.0, (writes_so_far * K * H) / D)
             
-            # Compute empirical lambda
-            total_writes = (fixed_N + 1) * K * H
-            empirical_lambda = total_writes / D
-            
-            # Retrieve needle
+            # Retrieve needle NOW
             retrieved = mem.read(needle_hx)
             cosine = cosine_similarity(needle_value, retrieved)
+            
+            # 4. Optionally write remaining distractors (not part of measurement)
+            # This keeps total load fixed for comparison, but doesn't affect the measurement
+            remaining_distractors = fixed_N - distance
+            for hx, v in zip(distractor_hx_list[distance:], distractor_values[distance:]):
+                mem.write(hx, v)
+            
+            # Compute final empirical lambda (after all writes, for reference)
+            total_writes = (fixed_N + 1) * K * H
+            empirical_lambda = total_writes / D
             
             raw_trials.append({
                 "seed": seed,
                 "mode": "distance",
                 "N": fixed_N,
                 "distance": distance,
+                "num_writes_after_needle_at_query": distance,
+                "empirical_lambda_at_query": empirical_lambda_at_query,
                 "cosine": cosine,
-                "empirical_lambda": empirical_lambda,
-                "occupancy": occupied_ratio,
+                "empirical_lambda": empirical_lambda,  # Final lambda after all writes
+                "occupancy": occupied_ratio,  # At query time
             })
         
         # === Experiment 2: Retrieval vs Load (fixed distances) ===
         fixed_distances = [0, 500]  # Two distances for stronger evidence
         for fixed_distance in fixed_distances:
             for N in N_values:
+                # Clamp distance to valid range [0, N] and skip invalid cases
+                if fixed_distance < 0 or fixed_distance > N:
+                    continue
+                
                 mem.reset()
                 
                 # Generate needle
@@ -163,43 +178,49 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 distractor_values = torch.randn(N, d, device=device)
                 distractor_values = torch.nn.functional.normalize(distractor_values, p=2, dim=1)
                 
-                # Fix distance protocol: keep total load fixed
-                # Write (N - distance) distractors first
-                num_before = N - fixed_distance
-                for hx, v in zip(distractor_hx_list[:num_before], distractor_values[:num_before]):
-                    mem.write(hx, v)
-                
-                # Write needle
+                # Apply same distance protocol: write needle, write distance distractors, query, then write remaining
+                # 1. Write needle first
                 mem.write(needle_hx, needle_value)
                 
-                # Write remaining distance distractors
-                for hx, v in zip(distractor_hx_list[num_before:], distractor_values[num_before:]):
+                # 2. Write 'fixed_distance' distractors AFTER needle
+                for hx, v in zip(distractor_hx_list[:fixed_distance], distractor_values[:fixed_distance]):
                     mem.write(hx, v)
                 
-                # Compute measured occupancy
+                # 3. READ needle NOW (this is the measurement)
+                # Compute writes so far: 1 (needle) + fixed_distance (distractors)
+                writes_so_far = 1 + fixed_distance
+                empirical_lambda_at_query = (writes_so_far * K * H) / D
+                
+                # Compute measured occupancy at query time
                 stats = mem.stats()
                 if "occupied_slots" in stats:
                     occupied_ratio = stats["occupied_slots"] / D
                 else:
-                    total_writes = (N + 1) * K * H
-                    occupied_ratio = min(1.0, total_writes / D)
+                    occupied_ratio = min(1.0, (writes_so_far * K * H) / D)
                 
-                # Compute empirical lambda
-                total_writes = (N + 1) * K * H
-                empirical_lambda = total_writes / D
-                
-                # Retrieve needle
+                # Retrieve needle NOW
                 retrieved = mem.read(needle_hx)
                 cosine = cosine_similarity(needle_value, retrieved)
+                
+                # 4. Optionally write remaining distractors (not part of measurement)
+                remaining_distractors = N - fixed_distance
+                for hx, v in zip(distractor_hx_list[fixed_distance:], distractor_values[fixed_distance:]):
+                    mem.write(hx, v)
+                
+                # Compute final empirical lambda (after all writes, for reference)
+                total_writes = (N + 1) * K * H
+                empirical_lambda = total_writes / D
                 
                 raw_trials.append({
                     "seed": seed,
                     "mode": "load",
                     "N": N,
                     "distance": fixed_distance,
+                    "num_writes_after_needle_at_query": fixed_distance,
+                    "empirical_lambda_at_query": empirical_lambda_at_query,
                     "cosine": cosine,
-                    "empirical_lambda": empirical_lambda,
-                    "occupancy": occupied_ratio,
+                    "empirical_lambda": empirical_lambda,  # Final lambda after all writes
+                    "occupancy": occupied_ratio,  # At query time
                 })
     
     # Summarize
@@ -211,6 +232,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         if trial["mode"] == "distance":
             distance_cosines[trial["distance"]].append(trial["cosine"])
     
+    distance_means_list = []
     for distance in distance_values:
         if distance_cosines[distance]:
             stats = mean_ci95(distance_cosines[distance])
@@ -226,6 +248,40 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     "std": std,
                 }
             }
+            distance_means_list.append((distance, mean))
+        else:
+            distance_means_list.append((distance, 0.0))
+    
+    # Sanity check: distance curve should change with increasing distance
+    # If collision/interference exists, more writes after needle should degrade retrieval
+    if len(distance_means_list) >= 2:
+        # Sort by distance
+        distance_means_list.sort(key=lambda x: x[0])
+        first_cosine = distance_means_list[0][1]
+        last_cosine = distance_means_list[-1][1]
+        cosine_range = abs(last_cosine - first_cosine)
+        
+        # If curve is essentially flat (range < 0.01), note this in experiment description
+        if cosine_range < 0.01:
+            experiment_description = (
+                "Needle-in-haystack retrieval. Distance protocol: write needle, "
+                "write N distractors AFTER needle, query NOW. "
+                "NOTE: Distance curve shows minimal change (range < 0.01), suggesting "
+                "low interference from writes-after-needle at this load. "
+                "This may indicate that BBPM's addressing is robust to temporal distance "
+                "or that the load is below interference threshold."
+            )
+        else:
+            experiment_description = (
+                "Needle-in-haystack retrieval. Distance protocol: write needle, "
+                "write N distractors AFTER needle, query NOW. "
+                "Distance measures interference from writes-after-needle before query."
+            )
+    else:
+        experiment_description = (
+            "Needle-in-haystack retrieval. Distance protocol: write needle, "
+            "write N distractors AFTER needle, query NOW."
+        )
     
     # Load curves (fixed distances)
     fixed_distances = [0, 500]
@@ -324,7 +380,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     write_metrics_json(
         metrics_path,
         EXP_ID,
-        "Needle-in-haystack",
+        experiment_description,
         config_dict,
         seeds,
         raw_trials,

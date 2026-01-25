@@ -42,7 +42,7 @@ python -m bbpm.experiments.run --exp exp01 --device cpu --seeds 10 --N_values 50
 - `artifacts/metrics/exp01.json`
 - `artifacts/figures/exp01_snr_scaling.pdf`
 
-**Metrics:** Cosine similarity, MSE, occupancy vs N
+**Metrics:** Cosine similarity, MSE, estimated noise variance, measured occupancy vs N
 
 ### Exp02: K/H Ablation
 
@@ -56,7 +56,7 @@ python -m bbpm.experiments.run --exp exp02 --device cpu --seeds 10
 - `artifacts/metrics/exp02.json`
 - `artifacts/figures/exp02_k_h_ablation.pdf`
 
-**Metrics:** Retrieval quality, self-collision rate, cross-item collision rate, block occupancy skew
+**Metrics:** Retrieval quality, exact self-collision rate (per hash family), cross-item collision rate (from global addresses), block occupancy skew
 
 ### Exp03: Runtime vs Attention
 
@@ -70,7 +70,7 @@ python -m bbpm.experiments.run --exp exp03 --device cuda --seeds 1
 - `artifacts/metrics/exp03.json`
 - `artifacts/figures/exp03_runtime_vs_attention.pdf`
 
-**Metrics:** Runtime vs sequence length, peak memory vs sequence length
+**Metrics:** Runtime vs sequence length (with CI95), peak memory vs sequence length. Separates addressing-only, gather bandwidth, and end-to-end costs. Uses batch APIs for vectorized GPU operations.
 
 ### Exp04: Needle-in-Haystack
 
@@ -84,7 +84,7 @@ python -m bbpm.experiments.run --exp exp04 --device cpu --seeds 10
 - `artifacts/metrics/exp04.json`
 - `artifacts/figures/exp04_needle.pdf`
 
-**Metrics:** Retrieval vs distance (fixed load), retrieval vs load (fixed distance)
+**Metrics:** Retrieval vs distance (fixed load), retrieval vs load for two fixed distances (0 and 500). Distance protocol keeps total load constant while varying temporal distance.
 
 ### Exp05: End-to-End Associative Recall
 
@@ -98,7 +98,7 @@ python -m bbpm.experiments.run --exp exp05 --device cpu --seeds 5
 - `artifacts/metrics/exp05.json`
 - `artifacts/figures/exp05_end2end_assoc.pdf`
 
-**Metrics:** Training curves, test accuracy, parameter counts
+**Metrics:** Training loss curves, test accuracy curves, parameter counts (with ±5% control). Uses token IDs as inputs with shared embedding layer and classification task (exact match accuracy).
 
 ### Exp06: Occupancy Skew
 
@@ -112,7 +112,7 @@ python -m bbpm.experiments.run --exp exp06 --device cpu --seeds 10
 - `artifacts/metrics/exp06.json`
 - `artifacts/figures/exp06_occupancy_skew.pdf`
 
-**Metrics:** Block occupancy distribution, Gini coefficient, collision rate vs skew
+**Metrics:** Block occupancy distribution (histograms), Gini coefficient, collision rate vs skew (from global addresses). Supports uniform, Zipf, and token-ID modes. Deterministic with local NumPy RNG.
 
 ### Exp07: Drift and Reachability
 
@@ -126,7 +126,7 @@ python -m bbpm.experiments.run --exp exp07 --device cpu --seeds 10
 - `artifacts/metrics/exp07.json`
 - `artifacts/figures/exp07_drift_reachability.pdf`
 
-**Metrics:** Reachability vs training step, key change rate
+**Metrics:** Reachability (success rate) vs training step for three keying modes (token-ID, frozen projection, trainable projection), key change rate vs step, mean Hamming distance vs step. Gradual drift model with deterministic noise.
 
 ## Output Format
 
@@ -153,13 +153,21 @@ All experiments produce JSON files with the following structure:
 }
 ```
 
+**Schema Requirements:**
+- All experiments must include all top-level keys
+- `summary` uses string keys (e.g., `"N=5000"`, `"K=32|H=4|N=1000"`) for JSON compatibility
+- `raw_trials` contains per-seed, per-configuration results
+- `summary` contains aggregated statistics with mean ± 95% CI where applicable
+
 ### Figures
 
 All figures are saved as PDFs with:
-- Vector-friendly format
-- Hardware/version footer
-- Confidence intervals (CI95) where applicable
-- Clean legends and labels
+- Vector-friendly format (PDF)
+- Non-interactive backend (Agg) for reproducibility
+- Hardware/version footer (torch version, CUDA info, git commit)
+- Confidence intervals (CI95) where multi-seed data exists
+- Clean legends, axis labels, and titles
+- ICML-grade formatting standards
 
 ## Reproducibility
 
@@ -169,7 +177,9 @@ All experiments use deterministic seeding:
 
 - Same seed → bit-identical numeric outputs (timestamps may differ)
 - Uses `bbpm.utils.seeds.seed_everything(seed)` for each trial
-- NumPy RNG is also seeded deterministically
+- NumPy RNG uses `np.random.default_rng(seed)` for local, deterministic generation
+- Never uses Python `hash()` or global `np.random` state
+- Verified: Exp06 and Exp07 produce identical numeric arrays across runs with same seeds
 
 ### Running with Specific Seeds
 

@@ -32,7 +32,8 @@ def add_args(parser: argparse.ArgumentParser) -> None:
         "--N_values",
         type=int,
         nargs="+",
-        default=[500, 1000, 3000, 6000, 10000, 15000, 20000],
+        default=[500, 1000, 3000, 6000, 10000, 15000, 20000],  # Full sweep for paper runs
+        # For quick CI/testing, use: --N_values 500 1000
         help="N values to sweep (number of stored items)",
     )
 

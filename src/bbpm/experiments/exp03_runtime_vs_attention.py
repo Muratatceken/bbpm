@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
+from bbpm.metrics.stats import mean_ci95
 from bbpm.experiments.common import (
     make_output_paths,
     ensure_device,
@@ -137,8 +138,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         attention = attention.to(torch.bfloat16)
     
     raw_trials = []
-    num_warmup = 50
-    num_timed = 200
+    num_warmup = 20
+    num_repeats = 50  # Number of timed repeats for CI
     
     seed_everything(42)
     
@@ -149,10 +150,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         if dtype_str == "bfloat16":
             x = x.to(torch.bfloat16)
         
-        # Generate random keys for BBPM
+        # Generate random keys for BBPM as tensor
         import random
         random.seed(42)
         hx_list = [random.randint(0, 2**64 - 1) for _ in range(T)]
+        hx_tensor = torch.tensor(hx_list, dtype=torch.long, device=device)
         values = torch.randn(T, d_model, device=device)
         if dtype_str == "bfloat16":
             values = values.to(torch.bfloat16)
@@ -165,14 +167,18 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         if device.type == "cuda":
             torch.cuda.synchronize()
         
-        start = time.perf_counter()
-        for _ in range(num_timed):
+        # Multiple repeats for CI
+        attention_times = []
+        for _ in range(num_repeats):
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            start = time.perf_counter()
             _ = attention(x)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            attention_times.append((time.perf_counter() - start) * 1000)  # ms
         
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        
-        attention_time = (time.perf_counter() - start) / num_timed
+        attention_stats = mean_ci95(attention_times)
         
         # Peak memory for attention
         if device.type == "cuda":
@@ -183,88 +189,94 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         else:
             attention_peak_mem = 0.0
         
-        # === Timing: BBPM addressing only ===
-        mem = BBPMMemory(mem_cfg)
+        # === Timing: BBPM addressing only (batch) ===
+        addresser = BlockAddress(addr_cfg)
         
         # Warmup
         for _ in range(num_warmup):
-            for hx in hx_list:
-                _ = addresser.addresses_tensor(hx, device)
+            _ = addresser.addresses_batch(hx_tensor, device)
         
         if device.type == "cuda":
             torch.cuda.synchronize()
         
-        start = time.perf_counter()
-        for _ in range(num_timed):
-            for hx in hx_list:
-                _ = addresser.addresses_tensor(hx, device)
-        
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        
-        addressing_time = (time.perf_counter() - start) / num_timed
-        
-        # === Timing: BBPM gather throughput ===
-        # Write once, then measure gather
-        mem.reset()
-        for hx, v in zip(hx_list, values):
-            mem.write(hx, v)
-        
-        # Warmup
-        for _ in range(num_warmup):
-            for hx in hx_list:
-                _ = mem.read(hx)
-        
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        
-        start = time.perf_counter()
-        for _ in range(num_timed):
-            for hx in hx_list:
-                _ = mem.read(hx)
-        
-        if device.type == "cuda":
+        # Multiple repeats for CI
+        addressing_times = []
+        for _ in range(num_repeats):
+            if device.type == "cuda":
                 torch.cuda.synchronize()
+            start = time.perf_counter()
+            _ = addresser.addresses_batch(hx_tensor, device)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            addressing_times.append((time.perf_counter() - start) * 1000)  # ms
         
-        gather_time = (time.perf_counter() - start) / num_timed
+        addressing_stats = mean_ci95(addressing_times)
+        
+        # === Timing: BBPM gather bandwidth (batch) ===
+        mem = BBPMMemory(mem_cfg)
+        mem.reset()
+        mem.write_batch(hx_tensor, values)
+        
+        # Warmup
+        for _ in range(num_warmup):
+            _ = mem.read_batch(hx_tensor)
+        
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        
+        # Multiple repeats for CI
+        gather_times = []
+        for _ in range(num_repeats):
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            start = time.perf_counter()
+            _ = mem.read_batch(hx_tensor)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            gather_times.append((time.perf_counter() - start) * 1000)  # ms
+        
+        gather_stats = mean_ci95(gather_times)
         
         # Compute gather bandwidth (GB/s)
-        # Each read gathers K*H*d floats = K*H*d*4 bytes (float32) or K*H*d*2 bytes (bfloat16)
         bytes_per_read = K * H * d * (4 if dtype_str == "float32" else 2)
-        total_bytes = bytes_per_read * T * num_timed
-        gather_bandwidth = (total_bytes / (1024**3)) / gather_time  # GB/s
+        gather_bandwidths = []
+        for t_ms in gather_times:
+            t_s = t_ms / 1000.0
+            total_bytes = bytes_per_read * T
+            gbps = (total_bytes / (1024**3)) / t_s
+            gather_bandwidths.append(gbps)
+        bandwidth_stats = mean_ci95(gather_bandwidths)
         
-        # === Timing: BBPM end-to-end (addressing + gather) ===
+        # === Timing: BBPM end-to-end (batch) ===
         mem.reset()
         
         # Warmup
         for _ in range(num_warmup):
-            for hx, v in zip(hx_list, values):
-                mem.write(hx, v)
-            for hx in hx_list:
-                _ = mem.read(hx)
+            mem.write_batch(hx_tensor, values)
+            _ = mem.read_batch(hx_tensor)
         
         if device.type == "cuda":
             torch.cuda.synchronize()
         
-        start = time.perf_counter()
-        for _ in range(num_timed):
-            for hx, v in zip(hx_list, values):
-                mem.write(hx, v)
-            for hx in hx_list:
-                _ = mem.read(hx)
+        # Multiple repeats for CI
+        e2e_times = []
+        for _ in range(num_repeats):
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            start = time.perf_counter()
+            mem.write_batch(hx_tensor, values)
+            _ = mem.read_batch(hx_tensor)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            e2e_times.append((time.perf_counter() - start) * 1000)  # ms
         
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        
-        bbpm_e2e_time = (time.perf_counter() - start) / num_timed
+        e2e_stats = mean_ci95(e2e_times)
         
         # Peak memory for BBPM
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
             mem.reset()
-            for hx, v in zip(hx_list, values):
-                mem.write(hx, v)
+            mem.write_batch(hx_tensor, values)
             torch.cuda.synchronize()
             bbpm_peak_mem = torch.cuda.max_memory_allocated() / (1024**2)  # MB
         else:
@@ -272,43 +284,83 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         
         raw_trials.append({
             "T": T,
-            "attention_time_ms": attention_time * 1000,
-            "addressing_time_ms": addressing_time * 1000,
-            "gather_time_ms": gather_time * 1000,
-            "gather_bandwidth_gbps": gather_bandwidth,
-            "bbpm_e2e_time_ms": bbpm_e2e_time * 1000,
+            "attention_time_ms": attention_stats["mean"],
+            "addressing_time_ms": addressing_stats["mean"],
+            "gather_time_ms": gather_stats["mean"],
+            "gather_bandwidth_gbps": bandwidth_stats["mean"],
+            "bbpm_e2e_time_ms": e2e_stats["mean"],
             "attention_peak_mem_mb": attention_peak_mem,
             "bbpm_peak_mem_mb": bbpm_peak_mem,
+            # Store stats for summary
+            "attention_time_stats": attention_stats,
+            "addressing_time_stats": addressing_stats,
+            "gather_time_stats": gather_stats,
+            "bandwidth_stats": bandwidth_stats,
+            "e2e_time_stats": e2e_stats,
         })
     
-    # Summarize (for this experiment, we just use raw values since T is the sweep variable)
+    # Summarize with CI stats
     summary = {}
     for trial in raw_trials:
         T = trial["T"]
         summary[f"T_{T}"] = {
-            "attention_time_ms": trial["attention_time_ms"],
-            "addressing_time_ms": trial["addressing_time_ms"],
-            "gather_time_ms": trial["gather_time_ms"],
-            "gather_bandwidth_gbps": trial["gather_bandwidth_gbps"],
-            "bbpm_e2e_time_ms": trial["bbpm_e2e_time_ms"],
+            "attention_time_ms": trial["attention_time_stats"],
+            "addressing_time_ms": trial["addressing_time_stats"],
+            "gather_time_ms": trial["gather_time_stats"],
+            "gather_bandwidth_gbps": trial["bandwidth_stats"],
+            "bbpm_e2e_time_ms": trial["e2e_time_stats"],
             "attention_peak_mem_mb": trial["attention_peak_mem_mb"],
             "bbpm_peak_mem_mb": trial["bbpm_peak_mem_mb"],
         }
     
-    # Generate figure
+    # Generate figure with CI bands
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
     
-    # Panel 1: Runtime vs T
+    # Panel 1: Runtime vs T (log-log) with CI
     T_vals = [t["T"] for t in raw_trials]
-    attention_times = [t["attention_time_ms"] for t in raw_trials]
-    addressing_times = [t["addressing_time_ms"] for t in raw_trials]
-    gather_times = [t["gather_time_ms"] for t in raw_trials]
-    bbpm_e2e_times = [t["bbpm_e2e_time_ms"] for t in raw_trials]
     
-    ax1.plot(T_vals, attention_times, "o-", label="Attention", linewidth=2)
-    ax1.plot(T_vals, addressing_times, "s-", label="BBPM Addressing", linewidth=2)
-    ax1.plot(T_vals, gather_times, "^-", label="BBPM Gather", linewidth=2)
-    ax1.plot(T_vals, bbpm_e2e_times, "d-", label="BBPM End-to-End", linewidth=2)
+    # Extract means and CIs for each metric
+    attention_means = []
+    attention_lows = []
+    attention_highs = []
+    addressing_means = []
+    addressing_lows = []
+    addressing_highs = []
+    gather_means = []
+    gather_lows = []
+    gather_highs = []
+    e2e_means = []
+    e2e_lows = []
+    e2e_highs = []
+    
+    for trial in raw_trials:
+        T = trial["T"]
+        key = f"T_{T}"
+        if key in summary:
+            attention_means.append(summary[key]["attention_time_ms"]["mean"])
+            attention_lows.append(summary[key]["attention_time_ms"]["ci95_low"])
+            attention_highs.append(summary[key]["attention_time_ms"]["ci95_high"])
+            
+            addressing_means.append(summary[key]["addressing_time_ms"]["mean"])
+            addressing_lows.append(summary[key]["addressing_time_ms"]["ci95_low"])
+            addressing_highs.append(summary[key]["addressing_time_ms"]["ci95_high"])
+            
+            gather_means.append(summary[key]["gather_time_ms"]["mean"])
+            gather_lows.append(summary[key]["gather_time_ms"]["ci95_low"])
+            gather_highs.append(summary[key]["gather_time_ms"]["ci95_high"])
+            
+            e2e_means.append(summary[key]["bbpm_e2e_time_ms"]["mean"])
+            e2e_lows.append(summary[key]["bbpm_e2e_time_ms"]["ci95_low"])
+            e2e_highs.append(summary[key]["bbpm_e2e_time_ms"]["ci95_high"])
+    
+    plot_line_with_ci(ax1, T_vals, attention_means, attention_lows, attention_highs,
+                      label="Attention", linestyle="-")
+    plot_line_with_ci(ax1, T_vals, addressing_means, addressing_lows, addressing_highs,
+                      label="BBPM Addressing", linestyle="-")
+    plot_line_with_ci(ax1, T_vals, gather_means, gather_lows, gather_highs,
+                      label="BBPM Gather", linestyle="-")
+    plot_line_with_ci(ax1, T_vals, e2e_means, e2e_lows, e2e_highs,
+                      label="BBPM End-to-End", linestyle="-")
     ax1.set_xlabel("Sequence Length (T)")
     ax1.set_ylabel("Time per Forward Pass (ms)")
     ax1.set_title("Exp03: Runtime vs Sequence Length")

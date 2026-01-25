@@ -8,11 +8,11 @@ from typing import Dict, Any
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
-from bbpm.metrics.retrieval import cosine_similarity, mse
-from bbpm.metrics.stats import mean_ci95, summarize_groups
+from bbpm.metrics.stats import summarize_groups
 from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
@@ -118,17 +118,19 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             
             print("computing metrics...", end=" ", flush=True)
             
-            # Compute metrics
-            cosines = []
-            mses = []
-            for v, r in zip(test_values, retrieved_tensor):
-                cos = cosine_similarity(v, r)
-                mse_val = mse(v, r)
-                cosines.append(cos)
-                mses.append(mse_val)
+            # Compute error vector
+            err = retrieved_tensor - test_values  # [test_n, d]
             
-            mean_cosine = np.mean(cosines)
-            mean_mse = np.mean(mses)
+            # Compute noise variance: mean over items of variance across dimensions
+            noise_var = err.var(dim=1, unbiased=False).mean().item()
+            
+            # Vectorize cosine similarity: batch computation
+            cosines = F.cosine_similarity(test_values, retrieved_tensor, dim=1)  # [test_n]
+            mean_cosine = cosines.mean().item()
+            
+            # Vectorize MSE: batch computation
+            mses = F.mse_loss(test_values, retrieved_tensor, reduction='none').mean(dim=1)  # [test_n]
+            mean_mse = mses.mean().item()
             
             # Compute occupancy using mem.stats() (requires count_normalized mode)
             # This gives exact occupancy: fraction of slots with count > 0
@@ -147,73 +149,33 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "N": N,
                 "cosine": mean_cosine,
                 "mse": mean_mse,
+                "noise_var": noise_var,
                 "occupancy": occupied_ratio,
             })
             print("done")
     
-    # Summarize across seeds for each N
+    # Summarize across seeds for each N using summarize_groups
     print("Summarizing results...")
-    summary = {}
-    for N in N_values:
-        n_trials = [t for t in raw_trials if t["N"] == N]
-        
-        cosine_vals = [t["cosine"] for t in n_trials]
-        mse_vals = [t["mse"] for t in n_trials]
-        occ_vals = [t["occupancy"] for t in n_trials]
-        
-        cosine_stats = mean_ci95(cosine_vals)
-        mse_stats = mean_ci95(mse_vals)
-        occ_stats = mean_ci95(occ_vals)
-        
-        cosine_mean = cosine_stats["mean"]
-        cosine_lo = cosine_stats["ci95_low"]
-        cosine_hi = cosine_stats["ci95_high"]
-        cosine_std = cosine_stats["std"]
-        
-        mse_mean = mse_stats["mean"]
-        mse_lo = mse_stats["ci95_low"]
-        mse_hi = mse_stats["ci95_high"]
-        mse_std = mse_stats["std"]
-        
-        occ_mean = occ_stats["mean"]
-        occ_lo = occ_stats["ci95_low"]
-        occ_hi = occ_stats["ci95_high"]
-        occ_std = occ_stats["std"]
-        
-        summary[f"N_{N}"] = {
-            "cosine": {
-                "mean": cosine_mean,
-                "ci95_low": cosine_lo,
-                "ci95_high": cosine_hi,
-                "std": cosine_std,
-            },
-            "mse": {
-                "mean": mse_mean,
-                "ci95_low": mse_lo,
-                "ci95_high": mse_hi,
-                "std": mse_std,
-            },
-            "occupancy": {
-                "mean": occ_mean,
-                "ci95_low": occ_lo,
-                "ci95_high": occ_hi,
-                "std": occ_std,
-            },
-        }
+    summary = summarize_groups(raw_trials, ["N"], ["cosine", "mse", "noise_var", "occupancy"])
     
-    # Generate figure
+    # Generate figure with 3 panels
     print("Generating figure...")
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 12))
     
     # Panel 1: Cosine similarity vs N
     cosine_means = []
     cosine_lows = []
     cosine_highs = []
     for N in N_values:
-        n_summary = summary[f"N_{N}"]
-        cosine_means.append(n_summary["cosine"]["mean"])
-        cosine_lows.append(n_summary["cosine"]["ci95_low"])
-        cosine_highs.append(n_summary["cosine"]["ci95_high"])
+        n_key = f"N={N}"
+        if n_key in summary and "cosine" in summary[n_key]:
+            cosine_means.append(summary[n_key]["cosine"]["mean"])
+            cosine_lows.append(summary[n_key]["cosine"]["ci95_low"])
+            cosine_highs.append(summary[n_key]["cosine"]["ci95_high"])
+        else:
+            cosine_means.append(0)
+            cosine_lows.append(0)
+            cosine_highs.append(0)
     
     plot_line_with_ci(ax1, N_values, cosine_means, cosine_lows, cosine_highs,
                       label="Cosine Similarity", linestyle="-")
@@ -223,23 +185,51 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
-    # Panel 2: Occupancy vs N
+    # Panel 2: Noise variance vs N
+    noise_var_means = []
+    noise_var_lows = []
+    noise_var_highs = []
+    for N in N_values:
+        n_key = f"N={N}"
+        if n_key in summary and "noise_var" in summary[n_key]:
+            noise_var_means.append(summary[n_key]["noise_var"]["mean"])
+            noise_var_lows.append(summary[n_key]["noise_var"]["ci95_low"])
+            noise_var_highs.append(summary[n_key]["noise_var"]["ci95_high"])
+        else:
+            noise_var_means.append(0)
+            noise_var_lows.append(0)
+            noise_var_highs.append(0)
+    
+    plot_line_with_ci(ax2, N_values, noise_var_means, noise_var_lows, noise_var_highs,
+                      label="Noise Variance", linestyle="-")
+    ax2.set_xlabel("Number of Stored Items (N)")
+    ax2.set_ylabel("Noise Variance")
+    ax2.set_title("Estimated Noise Variance vs Capacity")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    # Panel 3: Occupancy vs N
     occ_means = []
     occ_lows = []
     occ_highs = []
     for N in N_values:
-        n_summary = summary[f"N_{N}"]
-        occ_means.append(n_summary["occupancy"]["mean"])
-        occ_lows.append(n_summary["occupancy"]["ci95_low"])
-        occ_highs.append(n_summary["occupancy"]["ci95_high"])
+        n_key = f"N={N}"
+        if n_key in summary and "occupancy" in summary[n_key]:
+            occ_means.append(summary[n_key]["occupancy"]["mean"])
+            occ_lows.append(summary[n_key]["occupancy"]["ci95_low"])
+            occ_highs.append(summary[n_key]["occupancy"]["ci95_high"])
+        else:
+            occ_means.append(0)
+            occ_lows.append(0)
+            occ_highs.append(0)
     
-    plot_line_with_ci(ax2, N_values, occ_means, occ_lows, occ_highs,
+    plot_line_with_ci(ax3, N_values, occ_means, occ_lows, occ_highs,
                       label="Occupancy Ratio", linestyle="-")
-    ax2.set_xlabel("Number of Stored Items (N)")
-    ax2.set_ylabel("Occupancy Ratio")
-    ax2.set_title("Memory Occupancy vs Capacity")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
+    ax3.set_xlabel("Number of Stored Items (N)")
+    ax3.set_ylabel("Occupancy Ratio")
+    ax3.set_title("Memory Occupancy vs Capacity")
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
     
     add_footer(fig, EXP_ID)
     

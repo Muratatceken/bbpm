@@ -195,6 +195,36 @@ class BBPMMemory(nn.Module):
 
         return result
 
+    def write_batch(self, hx_tensor: "torch.LongTensor", values: "torch.Tensor") -> None:
+        """Write a batch of values to memory.
+        
+        Args:
+            hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
+            values: Tensor of shape [T, d] containing values to write
+        """
+        T = hx_tensor.shape[0]
+        for i in range(T):
+            hx = int(hx_tensor[i].item())
+            v = values[i]
+            self.write(hx, v)
+
+    def read_batch(self, hx_tensor: "torch.LongTensor") -> "torch.Tensor":
+        """Read a batch of values from memory.
+        
+        Args:
+            hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
+            
+        Returns:
+            Tensor of shape [T, d] containing retrieved values
+        """
+        T = hx_tensor.shape[0]
+        results = []
+        for i in range(T):
+            hx = int(hx_tensor[i].item())
+            r = self.read(hx)
+            results.append(r)
+        return torch.stack(results, dim=0)
+
     def reset(self) -> None:
         """Reset memory to initial state (clear all contents)."""
         self.memory.zero_()

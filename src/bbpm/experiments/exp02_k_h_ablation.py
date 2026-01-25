@@ -10,22 +10,40 @@ import numpy as np
 import torch
 
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
+from bbpm.addressing.hash_mix import mix64, u64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
 from bbpm.metrics.occupancy import block_occupancy
-from bbpm.metrics.stats import mean_ci95, gini_coefficient
+from bbpm.metrics.stats import summarize_groups
 from bbpm.experiments.common import (
     make_output_paths,
     seed_loop,
     ensure_device,
     write_metrics_json,
+    make_rng,
 )
 from bbpm.experiments.plotting import save_pdf, add_footer, plot_line_with_ci
 from bbpm.utils.seeds import seed_everything
 
 EXP_ID = "exp02"
 EXP_SLUG = "k_h_ablation"
+
+
+def deterministic_u64_list(n: int, seed_u64: int) -> list[int]:
+    """Generate deterministic list of uint64 values.
+    
+    Args:
+        n: Number of values to generate
+        seed_u64: Seed value (uint64)
+        
+    Returns:
+        List of n uint64 values as Python ints
+    """
+    rng = make_rng(seed_u64)
+    # Generate uint64 values using numpy RNG
+    values = rng.integers(0, 2**64, size=n, dtype=np.uint64)
+    return [int(v) for v in values]
 
 
 def add_args(parser: argparse.ArgumentParser) -> None:
@@ -116,47 +134,51 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 for N in N_values:
                     mem.reset()
                     
-                    # Generate N random keys and values
-                    random.seed(seed)
+                    # Generate deterministic keys using (seed, K, H, N) combination
+                    hx_seed = mix64(u64(seed) ^ u64(K) ^ u64(H) ^ u64(N))
+                    hx_list = deterministic_u64_list(N, hx_seed)
+                    
                     torch.manual_seed(seed)
-                    hx_list = [random.randint(0, 2**64 - 1) for _ in range(N)]
                     values = torch.randn(N, d, device=device)
                     values = torch.nn.functional.normalize(values, p=2, dim=1)
                     
-                    # Check self-collision (should be 0 with PRP)
+                    # Check self-collision exactly: check first 256 keys
+                    # Self-collision = 1 if within any hash family, offsets repeat
+                    check_n = min(N, 256)
                     self_collisions = 0
-                    for hx in hx_list[:min(N, 100)]:  # Sample check
+                    for hx in hx_list[:check_n]:
                         grouped = addresser.addresses_grouped(hx)
+                        has_collision = False
                         for addresses_h in grouped:
                             offsets = []
-                            block_id = None
                             for addr in addresses_h:
-                                if block_id is None:
-                                    block_id = addr // L
                                 offset = addr % L
                                 offsets.append(offset)
-                            # Check uniqueness
+                            # Check if offsets repeat within this hash family
                             if len(offsets) != len(set(offsets)):
-                                self_collisions += 1
+                                has_collision = True
+                                break
+                        if has_collision:
+                            self_collisions += 1
                     
-                    self_collision_rate = self_collisions / min(N, 100) if N > 0 else 0.0
+                    self_collision_rate = self_collisions / check_n if check_n > 0 else 0.0
                     
                     # Write all items and track addresses for collision analysis
                     all_addresses = []
                     block_ids_list = []
                     for hx, v in zip(hx_list, values):
                         mem.write(hx, v)
-                        # Get addresses for collision analysis
+                        # Get addresses for collision analysis (global addresses, not block IDs)
                         addrs = addresser.addresses(hx)
                         all_addresses.extend(addrs)
-                        # Extract block IDs
+                        # Extract block IDs for occupancy analysis
                         for addr in addrs:
                             block_ids_list.append(addr // L)
                     
-                    # Compute cross-item collision rate
+                    # Compute cross-item collision rate from global addresses
                     unique_addresses = len(set(all_addresses))
                     total_writes = len(all_addresses)
-                    collision_rate = 1.0 - (unique_addresses / total_writes) if total_writes > 0 else 0.0
+                    collision_rate = (total_writes - unique_addresses) / total_writes if total_writes > 0 else 0.0
                     
                     # Compute block occupancy skew
                     occ_analysis = block_occupancy(block_ids_list, B)
@@ -194,103 +216,31 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         "cosine": mean_cosine,
                     })
     
-    # Summarize across seeds
-    summary = {}
-    for K in K_values:
-        for H in H_values:
-            for N in N_values:
-                key = f"K_{K}_H_{H}_N_{N}"
-                trials = [t for t in raw_trials if t["K"] == K and t["H"] == H and t["N"] == N]
-                
-                if not trials:
-                    continue
-                
-                cosine_vals = [t["cosine"] for t in trials]
-                collision_vals = [t["collision_rate"] for t in trials]
-                skew_vals = [t["max_mean_ratio"] for t in trials]
-                gini_vals = [t["gini_skew"] for t in trials]
-                self_coll_vals = [t["self_collision_rate"] for t in trials]
-                
-                cosine_stats = mean_ci95(cosine_vals)
-                collision_stats = mean_ci95(collision_vals)
-                skew_stats = mean_ci95(skew_vals)
-                gini_stats = mean_ci95(gini_vals)
-                self_coll_stats = mean_ci95(self_coll_vals)
-                
-                cosine_mean = cosine_stats["mean"]
-                cosine_lo = cosine_stats["ci95_low"]
-                cosine_hi = cosine_stats["ci95_high"]
-                cosine_std = cosine_stats["std"]
-                
-                collision_mean = collision_stats["mean"]
-                collision_lo = collision_stats["ci95_low"]
-                collision_hi = collision_stats["ci95_high"]
-                collision_std = collision_stats["std"]
-                
-                skew_mean = skew_stats["mean"]
-                skew_lo = skew_stats["ci95_low"]
-                skew_hi = skew_stats["ci95_high"]
-                skew_std = skew_stats["std"]
-                
-                gini_mean = gini_stats["mean"]
-                gini_lo = gini_stats["ci95_low"]
-                gini_hi = gini_stats["ci95_high"]
-                gini_std = gini_stats["std"]
-                
-                self_coll_mean = self_coll_stats["mean"]
-                self_coll_lo = self_coll_stats["ci95_low"]
-                self_coll_hi = self_coll_stats["ci95_high"]
-                self_coll_std = self_coll_stats["std"]
-                
-                summary[key] = {
-                    "cosine": {
-                        "mean": cosine_mean,
-                        "ci95_low": cosine_lo,
-                        "ci95_high": cosine_hi,
-                        "std": cosine_std,
-                    },
-                    "collision_rate": {
-                        "mean": collision_mean,
-                        "ci95_low": collision_lo,
-                        "ci95_high": collision_hi,
-                        "std": collision_std,
-                    },
-                    "max_mean_ratio": {
-                        "mean": skew_mean,
-                        "ci95_low": skew_lo,
-                        "ci95_high": skew_hi,
-                        "std": skew_std,
-                    },
-                    "gini_skew": {
-                        "mean": gini_mean,
-                        "ci95_low": gini_lo,
-                        "ci95_high": gini_hi,
-                        "std": gini_std,
-                    },
-                    "self_collision_rate": {
-                        "mean": self_coll_mean,
-                        "ci95_low": self_coll_lo,
-                        "ci95_high": self_coll_hi,
-                        "std": self_coll_std,
-                    },
-                }
+    # Summarize across seeds using summarize_groups
+    summary = summarize_groups(
+        raw_trials,
+        ["K", "H", "N"],
+        ["cosine", "collision_rate", "max_mean_ratio", "gini_skew", "self_collision_rate"]
+    )
     
-    # Generate figure with multiple panels
+    # Generate figure with 2x2 grid showing multiple configs per panel
     fig = plt.figure(figsize=(14, 10))
+    
+    # Select configs to plot (at least 2-3 per panel)
+    plot_configs = [
+        (K, H) for K in [8, 32, 64] for H in [1, 4] 
+        if (K, H) in [(k, h) for k in K_values for h in H_values]
+    ][:6]  # Limit to 6 for readability
     
     # Panel 1: Accuracy (cosine) vs N for different K/H combinations
     ax1 = plt.subplot(2, 2, 1)
-    # Plot a subset of K/H combinations for clarity
-    plot_configs = [
-        (K, H) for K in [8, 32, 64] for H in [1, 4] if (K, H) in [(k, h) for k in K_values for h in H_values]
-    ]
-    for K, H in plot_configs[:6]:  # Limit to 6 lines for readability
+    for K, H in plot_configs:
         cosine_means = []
         cosine_lows = []
         cosine_highs = []
         for N in N_values:
-            key = f"K_{K}_H_{H}_N_{N}"
-            if key in summary:
+            key = f"K={K}|H={H}|N={N}"
+            if key in summary and "cosine" in summary[key]:
                 cosine_means.append(summary[key]["cosine"]["mean"])
                 cosine_lows.append(summary[key]["cosine"]["ci95_low"])
                 cosine_highs.append(summary[key]["cosine"]["ci95_high"])
@@ -306,65 +256,75 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
-    # Panel 2: Collision rate vs N
+    # Panel 2: Collision rate vs N for multiple configs
     ax2 = plt.subplot(2, 2, 2)
-    # Plot for K=32, H=4 as example
-    K_example, H_example = 32, 4
-    if (K_example, H_example) in [(k, h) for k in K_values for h in H_values]:
+    for K, H in plot_configs[:3]:  # Show 3 configs
         collision_means = []
         collision_lows = []
         collision_highs = []
         for N in N_values:
-            key = f"K_{K_example}_H_{H_example}_N_{N}"
-            if key in summary:
+            key = f"K={K}|H={H}|N={N}"
+            if key in summary and "collision_rate" in summary[key]:
                 collision_means.append(summary[key]["collision_rate"]["mean"])
                 collision_lows.append(summary[key]["collision_rate"]["ci95_low"])
                 collision_highs.append(summary[key]["collision_rate"]["ci95_high"])
-        if collision_means:
+            else:
+                collision_means.append(0)
+                collision_lows.append(0)
+                collision_highs.append(0)
+        if any(collision_means):
             plot_line_with_ci(ax2, N_values, collision_means, collision_lows, collision_highs,
-                            label=f"Collision Rate (K={K_example}, H={H_example})", linestyle="-")
+                            label=f"K={K}, H={H}", linestyle="-")
     ax2.set_xlabel("Number of Stored Items (N)")
     ax2.set_ylabel("Collision Rate")
     ax2.set_title("Cross-Item Collision Rate vs N")
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     
-    # Panel 3: Block skew (max/mean) vs N
+    # Panel 3: Block skew (max/mean) vs N for multiple configs
     ax3 = plt.subplot(2, 2, 3)
-    if (K_example, H_example) in [(k, h) for k in K_values for h in H_values]:
+    for K, H in plot_configs[:3]:  # Show 3 configs
         skew_means = []
         skew_lows = []
         skew_highs = []
         for N in N_values:
-            key = f"K_{K_example}_H_{H_example}_N_{N}"
-            if key in summary:
+            key = f"K={K}|H={H}|N={N}"
+            if key in summary and "max_mean_ratio" in summary[key]:
                 skew_means.append(summary[key]["max_mean_ratio"]["mean"])
                 skew_lows.append(summary[key]["max_mean_ratio"]["ci95_low"])
                 skew_highs.append(summary[key]["max_mean_ratio"]["ci95_high"])
-        if skew_means:
+            else:
+                skew_means.append(0)
+                skew_lows.append(0)
+                skew_highs.append(0)
+        if any(skew_means):
             plot_line_with_ci(ax3, N_values, skew_means, skew_lows, skew_highs,
-                            label=f"Max/Mean Ratio (K={K_example}, H={H_example})", linestyle="-")
+                            label=f"K={K}, H={H}", linestyle="-")
     ax3.set_xlabel("Number of Stored Items (N)")
     ax3.set_ylabel("Max/Mean Occupancy Ratio")
     ax3.set_title("Block Occupancy Skew vs N")
     ax3.grid(True, alpha=0.3)
     ax3.legend()
     
-    # Panel 4: Self-collision rate (should be 0)
+    # Panel 4: Self-collision rate (should be 0) for multiple configs
     ax4 = plt.subplot(2, 2, 4)
-    if (K_example, H_example) in [(k, h) for k in K_values for h in H_values]:
+    for K, H in plot_configs[:3]:  # Show 3 configs
         self_coll_means = []
         self_coll_lows = []
         self_coll_highs = []
         for N in N_values:
-            key = f"K_{K_example}_H_{H_example}_N_{N}"
-            if key in summary:
+            key = f"K={K}|H={H}|N={N}"
+            if key in summary and "self_collision_rate" in summary[key]:
                 self_coll_means.append(summary[key]["self_collision_rate"]["mean"])
                 self_coll_lows.append(summary[key]["self_collision_rate"]["ci95_low"])
                 self_coll_highs.append(summary[key]["self_collision_rate"]["ci95_high"])
-        if self_coll_means:
+            else:
+                self_coll_means.append(0)
+                self_coll_lows.append(0)
+                self_coll_highs.append(0)
+        if any(self_coll_means):
             plot_line_with_ci(ax4, N_values, self_coll_means, self_coll_lows, self_coll_highs,
-                            label=f"Self-Collision Rate (K={K_example}, H={H_example})", linestyle="-")
+                            label=f"K={K}, H={H}", linestyle="-")
     ax4.set_xlabel("Number of Stored Items (N)")
     ax4.set_ylabel("Self-Collision Rate")
     ax4.set_title("Self-Collision Rate vs N (should be 0)")

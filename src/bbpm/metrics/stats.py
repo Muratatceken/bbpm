@@ -1,7 +1,7 @@
 """Statistical utilities for experiments."""
 
 import numpy as np
-from typing import Sequence, Dict, Any, Tuple
+from typing import Sequence, Dict, Any
 from collections import defaultdict
 
 
@@ -78,7 +78,7 @@ def summarize_groups(
     raw_rows: list[Dict[str, Any]],
     groupby_keys: list[str],
     metric_keys: list[str]
-) -> Dict[Tuple, Dict[str, Dict[str, float]]]:
+) -> Dict[str, Dict[str, Dict[str, float]]]:
     """Summarize metrics grouped by specified keys.
     
     Groups raw trial data by specified keys and computes mean/CI/std for each
@@ -90,7 +90,7 @@ def summarize_groups(
         metric_keys: Metric keys to summarize (e.g., ["cosine", "mse"])
         
     Returns:
-        Dictionary keyed by group tuple (e.g., (N=1000, K=32))
+        Dictionary keyed by string group identifier (e.g., "N=1000" or "K=32|H=4|N=1000")
         with nested dict: {metric_name: {mean, ci95_low, ci95_high, std}}
     """
     # Group rows by groupby_keys
@@ -102,6 +102,13 @@ def summarize_groups(
     # Summarize each group
     result = {}
     for group_key, group_rows in groups.items():
+        # Convert tuple key to string format: "N=5000" or "K=32|H=4|N=1000"
+        if len(groupby_keys) == 1:
+            group_id = f"{groupby_keys[0]}={group_key[0]}"
+        else:
+            parts = [f"{k}={v}" for k, v in zip(groupby_keys, group_key)]
+            group_id = "|".join(parts)
+        
         summaries = {}
         for metric_key in metric_keys:
             values = [row[metric_key] for row in group_rows if metric_key in row]
@@ -113,6 +120,6 @@ def summarize_groups(
                     "ci95_high": stats_dict["ci95_high"],
                     "std": stats_dict["std"],
                 }
-        result[group_key] = summaries
+        result[group_id] = summaries
     
     return result

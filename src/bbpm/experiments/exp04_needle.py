@@ -77,7 +77,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         dtype=dtype_str,
         device=str(device),
         normalize_values="none",
-        read_mode="raw_mean",
+        read_mode="count_normalized",  # Enable occupancy tracking
         master_seed=42,
     )
     
@@ -101,16 +101,31 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             needle_value = torch.randn(d, device=device)
             needle_value = torch.nn.functional.normalize(needle_value, p=2, dim=0)
             
-            # Write needle at position 0
-            mem.write(needle_hx, needle_value)
-            
-            # Write distractors
+            # Generate all distractors
             distractor_hx_list = [random.randint(0, 2**64 - 1) for _ in range(fixed_N)]
             distractor_values = torch.randn(fixed_N, d, device=device)
             distractor_values = torch.nn.functional.normalize(distractor_values, p=2, dim=1)
             
-            for hx, v in zip(distractor_hx_list, distractor_values):
+            # Fix distance protocol: keep total load fixed
+            # Write (fixed_N - distance) distractors first
+            num_before = fixed_N - distance
+            for hx, v in zip(distractor_hx_list[:num_before], distractor_values[:num_before]):
                 mem.write(hx, v)
+            
+            # Write needle
+            mem.write(needle_hx, needle_value)
+            
+            # Write remaining distance distractors
+            for hx, v in zip(distractor_hx_list[num_before:], distractor_values[num_before:]):
+                mem.write(hx, v)
+            
+            # Compute measured occupancy
+            stats = mem.stats()
+            if "occupied_slots" in stats:
+                occupied_ratio = stats["occupied_slots"] / D
+            else:
+                total_writes = (fixed_N + 1) * K * H
+                occupied_ratio = min(1.0, total_writes / D)
             
             # Compute empirical lambda
             total_writes = (fixed_N + 1) * K * H
@@ -127,47 +142,65 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "distance": distance,
                 "cosine": cosine,
                 "empirical_lambda": empirical_lambda,
+                "occupancy": occupied_ratio,
             })
         
-        # === Experiment 2: Retrieval vs Load (fixed distance) ===
-        fixed_distance = 0  # Immediate retrieval
-        for N in N_values:
-            mem.reset()
-            
-            # Generate needle
-            random.seed(seed)
-            torch.manual_seed(seed)
-            needle_hx = random.randint(0, 2**64 - 1)
-            needle_value = torch.randn(d, device=device)
-            needle_value = torch.nn.functional.normalize(needle_value, p=2, dim=0)
-            
-            # Write needle
-            mem.write(needle_hx, needle_value)
-            
-            # Write N distractors
-            distractor_hx_list = [random.randint(0, 2**64 - 1) for _ in range(N)]
-            distractor_values = torch.randn(N, d, device=device)
-            distractor_values = torch.nn.functional.normalize(distractor_values, p=2, dim=1)
-            
-            for hx, v in zip(distractor_hx_list, distractor_values):
-                mem.write(hx, v)
-            
-            # Compute empirical lambda
-            total_writes = (N + 1) * K * H
-            empirical_lambda = total_writes / D
-            
-            # Retrieve needle
-            retrieved = mem.read(needle_hx)
-            cosine = cosine_similarity(needle_value, retrieved)
-            
-            raw_trials.append({
-                "seed": seed,
-                "mode": "load",
-                "N": N,
-                "distance": fixed_distance,
-                "cosine": cosine,
-                "empirical_lambda": empirical_lambda,
-            })
+        # === Experiment 2: Retrieval vs Load (fixed distances) ===
+        fixed_distances = [0, 500]  # Two distances for stronger evidence
+        for fixed_distance in fixed_distances:
+            for N in N_values:
+                mem.reset()
+                
+                # Generate needle
+                random.seed(seed)
+                torch.manual_seed(seed)
+                needle_hx = random.randint(0, 2**64 - 1)
+                needle_value = torch.randn(d, device=device)
+                needle_value = torch.nn.functional.normalize(needle_value, p=2, dim=0)
+                
+                # Generate all distractors
+                distractor_hx_list = [random.randint(0, 2**64 - 1) for _ in range(N)]
+                distractor_values = torch.randn(N, d, device=device)
+                distractor_values = torch.nn.functional.normalize(distractor_values, p=2, dim=1)
+                
+                # Fix distance protocol: keep total load fixed
+                # Write (N - distance) distractors first
+                num_before = N - fixed_distance
+                for hx, v in zip(distractor_hx_list[:num_before], distractor_values[:num_before]):
+                    mem.write(hx, v)
+                
+                # Write needle
+                mem.write(needle_hx, needle_value)
+                
+                # Write remaining distance distractors
+                for hx, v in zip(distractor_hx_list[num_before:], distractor_values[num_before:]):
+                    mem.write(hx, v)
+                
+                # Compute measured occupancy
+                stats = mem.stats()
+                if "occupied_slots" in stats:
+                    occupied_ratio = stats["occupied_slots"] / D
+                else:
+                    total_writes = (N + 1) * K * H
+                    occupied_ratio = min(1.0, total_writes / D)
+                
+                # Compute empirical lambda
+                total_writes = (N + 1) * K * H
+                empirical_lambda = total_writes / D
+                
+                # Retrieve needle
+                retrieved = mem.read(needle_hx)
+                cosine = cosine_similarity(needle_value, retrieved)
+                
+                raw_trials.append({
+                    "seed": seed,
+                    "mode": "load",
+                    "N": N,
+                    "distance": fixed_distance,
+                    "cosine": cosine,
+                    "empirical_lambda": empirical_lambda,
+                    "occupancy": occupied_ratio,
+                })
     
     # Summarize
     summary = {}
@@ -194,27 +227,29 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 }
             }
     
-    # Load curves (fixed distance)
-    load_cosines = {N: [] for N in N_values}
-    for trial in raw_trials:
-        if trial["mode"] == "load":
-            load_cosines[trial["N"]].append(trial["cosine"])
-    
-    for N in N_values:
-        if load_cosines[N]:
-            stats = mean_ci95(load_cosines[N])
-            mean = stats["mean"]
-            lo = stats["ci95_low"]
-            hi = stats["ci95_high"]
-            std = stats["std"]
-            summary[f"load_{N}"] = {
-                "cosine": {
-                    "mean": mean,
-                    "ci95_low": lo,
-                    "ci95_high": hi,
-                    "std": std,
+    # Load curves (fixed distances)
+    fixed_distances = [0, 500]
+    for fixed_distance in fixed_distances:
+        load_cosines = {N: [] for N in N_values}
+        for trial in raw_trials:
+            if trial["mode"] == "load" and trial["distance"] == fixed_distance:
+                load_cosines[trial["N"]].append(trial["cosine"])
+        
+        for N in N_values:
+            if load_cosines[N]:
+                stats = mean_ci95(load_cosines[N])
+                mean = stats["mean"]
+                lo = stats["ci95_low"]
+                hi = stats["ci95_high"]
+                std = stats["std"]
+                summary[f"load_d{fixed_distance}_N{N}"] = {
+                    "cosine": {
+                        "mean": mean,
+                        "ci95_low": lo,
+                        "ci95_high": hi,
+                        "std": std,
+                    }
                 }
-            }
     
     # Generate figure
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
@@ -242,26 +277,28 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
-    # Panel 2: Retrieval vs Load (fixed distance)
-    load_means = []
-    load_lows = []
-    load_highs = []
-    for N in N_values:
-        key = f"load_{N}"
-        if key in summary:
-            load_means.append(summary[key]["cosine"]["mean"])
-            load_lows.append(summary[key]["cosine"]["ci95_low"])
-            load_highs.append(summary[key]["cosine"]["ci95_high"])
-        else:
-            load_means.append(0)
-            load_lows.append(0)
-            load_highs.append(0)
-    
-    plot_line_with_ci(ax2, N_values, load_means, load_lows, load_highs,
-                      label="Cosine (distance=0)", linestyle="-")
+    # Panel 2: Retrieval vs Load (fixed distances: 0 and 500)
+    fixed_distances = [0, 500]
+    for fixed_distance in fixed_distances:
+        load_means = []
+        load_lows = []
+        load_highs = []
+        for N in N_values:
+            key = f"load_d{fixed_distance}_N{N}"
+            if key in summary:
+                load_means.append(summary[key]["cosine"]["mean"])
+                load_lows.append(summary[key]["cosine"]["ci95_low"])
+                load_highs.append(summary[key]["cosine"]["ci95_high"])
+            else:
+                load_means.append(0)
+                load_lows.append(0)
+                load_highs.append(0)
+        
+        plot_line_with_ci(ax2, N_values, load_means, load_lows, load_highs,
+                          label=f"Distance={fixed_distance}", linestyle="-")
     ax2.set_xlabel("Load (Number of Distractors)")
     ax2.set_ylabel("Cosine Similarity")
-    ax2.set_title("Retrieval vs Load (Fixed Distance)")
+    ax2.set_title("Retrieval vs Load (Fixed Distances)")
     ax2.grid(True, alpha=0.3)
     ax2.legend()
     

@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 
 from bbpm.experiments.plotting import get_git_commit, get_hardware_info
@@ -44,6 +45,21 @@ def seed_loop(num_seeds: int) -> List[int]:
         List of seed values [0, 1, ..., num_seeds-1]
     """
     return list(range(num_seeds))
+
+
+def make_rng(seed: int) -> np.random.Generator:
+    """Create a local NumPy random number generator with given seed.
+    
+    This enforces local RNG usage instead of global np.random state,
+    ensuring deterministic behavior across experiments.
+    
+    Args:
+        seed: Random seed
+        
+    Returns:
+        NumPy Generator instance
+    """
+    return np.random.default_rng(seed)
 
 
 def ensure_device(device_str: str) -> torch.device:

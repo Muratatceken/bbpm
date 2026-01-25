@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from bbpm.addressing.hash_mix import mix64, u64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.experiments.common import (
@@ -18,6 +19,7 @@ from bbpm.experiments.common import (
     seed_loop,
     ensure_device,
     write_metrics_json,
+    make_rng,
 )
 from bbpm.experiments.plotting import save_pdf, add_footer
 from bbpm.utils.seeds import seed_everything
@@ -64,38 +66,29 @@ def generate_batch(
     batch_size: int,
     T: int,
     vocab_size: int,
-    d_model: int,
     seed: int,
-    device: torch.device,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Generate canonical associative recall task batch.
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generate canonical associative recall task batch with token IDs.
     
-    Task: Given sequence of (key, value) pairs, retrieve value for a query key.
-    Sequence format: [key1, val1, key2, val2, ..., query_key, <pad>]
-    Target: value corresponding to query_key (exact match retrieval).
+    Task: Given sequence of (key, value) pairs, retrieve value token ID for a query key.
+    Sequence format: [key1, val1, key2, val2, ..., query_key]
+    Target: value token ID corresponding to query_key (classification).
     
     Args:
         batch_size: Batch size
-        T: Sequence length (number of pairs + query)
+        T: Sequence length (must be odd: num_pairs*2 + 1 for query)
         vocab_size: Vocabulary size
-        d_model: Model dimension
+        seed: Random seed
         
     Returns:
-        (sequences, targets, target_indices)
-        sequences: [batch_size, T, d_model] token embeddings
-        targets: [batch_size, d_model] target value embeddings
-        target_indices: [batch_size] indices of target in sequence
+        (sequences, targets)
+        sequences: [batch_size, T] token IDs
+        targets: [batch_size] target value token IDs
     """
-    random.seed(seed)
-    torch.manual_seed(seed)
-    
-    # Generate random embeddings for vocabulary
-    vocab_embeddings = torch.randn(vocab_size, d_model, device=device)
-    vocab_embeddings = torch.nn.functional.normalize(vocab_embeddings, p=2, dim=1)
+    rng = make_rng(seed)
     
     sequences = []
     targets = []
-    target_indices = []
     
     for _ in range(batch_size):
         # Generate pairs: (key, value) pairs
@@ -104,81 +97,66 @@ def generate_batch(
         used_keys = set()
         
         for _ in range(num_pairs):
-            key_id = random.randint(0, vocab_size - 1)
-            val_id = random.randint(0, vocab_size - 1)
+            key_id = int(rng.integers(0, vocab_size))
+            val_id = int(rng.integers(0, vocab_size))
             pairs.append((key_id, val_id))
             used_keys.add(key_id)
         
         # Query key: must appear in pairs
-        query_key_id = random.choice(list(used_keys))
+        query_key_id = rng.choice(list(used_keys))
         
-        # Find target value
+        # Find target value token ID
         target_val_id = None
         for k, v in pairs:
             if k == query_key_id:
                 target_val_id = v
                 break
         
-        # Build sequence: [key1, val1, key2, val2, ..., query_key, <pad>]
-        seq_embeddings = []
-        target_idx = None
-        for i, (k, v) in enumerate(pairs):
-            seq_embeddings.append(vocab_embeddings[k])
-            seq_embeddings.append(vocab_embeddings[v])
-            if k == query_key_id and target_idx is None:
-                target_idx = len(seq_embeddings) - 1  # Value position
+        # Build sequence: [key1, val1, key2, val2, ..., query_key]
+        seq_token_ids = []
+        for k, v in pairs:
+            seq_token_ids.append(k)
+            seq_token_ids.append(v)
+        seq_token_ids.append(query_key_id)  # Query at end
         
-        # Add query
-        seq_embeddings.append(vocab_embeddings[query_key_id])
-        if target_idx is None:
-            # Find in pairs
-            for k, v in pairs:
-                if k == query_key_id:
-                    for j, (k2, v2) in enumerate(pairs):
-                        if k2 == query_key_id:
-                            target_idx = j * 2 + 1
-                            break
-                    break
-        
-        # Pad to T
-        while len(seq_embeddings) < T:
-            seq_embeddings.append(torch.zeros(d_model, device=device))
-        
-        sequences.append(torch.stack(seq_embeddings[:T]))
-        targets.append(vocab_embeddings[target_val_id])
-        target_indices.append(target_idx)
+        sequences.append(seq_token_ids)
+        targets.append(target_val_id)
     
-    return torch.stack(sequences), torch.stack(targets), torch.tensor(target_indices, device=device)
+    return torch.tensor(sequences, dtype=torch.long), torch.tensor(targets, dtype=torch.long)
 
 
 class WindowedTransformer(nn.Module):
-    """Windowed transformer baseline."""
+    """Windowed transformer baseline with shared embedding."""
     
-    def __init__(self, d_model: int, num_heads: int, window_size: int):
+    def __init__(self, embedding: nn.Embedding, d_model: int, num_heads: int, window_size: int, vocab_size: int):
         super().__init__()
+        self.embedding = embedding
         self.window_size = window_size
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model, num_heads, dim_feedforward=d_model * 4),
             num_layers=2,
         )
-        self.output_proj = nn.Linear(d_model, d_model)
+        self.classifier = nn.Linear(d_model, vocab_size)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [batch, T, d_model]"""
+        """x: [batch, T] token IDs"""
+        # Embed tokens
+        x_emb = self.embedding(x)  # [batch, T, d_model]
         # Use last window_size tokens
-        x_window = x[:, -self.window_size:, :]
+        x_window = x_emb[:, -self.window_size:, :]
         # [window_size, batch, d_model]
         x_window = x_window.transpose(0, 1)
         out = self.transformer(x_window)
         # Use last token
-        return self.output_proj(out[-1].transpose(0, 1))
+        return self.classifier(out[-1].transpose(0, 1))  # [batch, vocab_size]
 
 
 class TransformerWithExternalKV(nn.Module):
-    """Transformer with external learned KV memory."""
+    """Transformer with external learned KV memory and shared embedding."""
     
-    def __init__(self, d_model: int, num_heads: int, memory_size: int):
+    def __init__(self, embedding: nn.Embedding, d_model: int, num_heads: int, memory_size: int, vocab_size: int):
         super().__init__()
+        self.embedding = embedding
         self.memory_size = memory_size
         self.memory = nn.Parameter(torch.randn(memory_size, d_model))
         self.transformer = nn.TransformerEncoder(
@@ -186,54 +164,66 @@ class TransformerWithExternalKV(nn.Module):
             num_layers=2,
         )
         self.attention_to_memory = nn.MultiheadAttention(d_model, num_heads)
-        self.output_proj = nn.Linear(d_model, d_model)
+        self.classifier = nn.Linear(d_model, vocab_size)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [batch, T, d_model]"""
+        """x: [batch, T] token IDs"""
+        # Embed tokens
+        x_emb = self.embedding(x)  # [batch, T, d_model]
         # Process sequence
-        x_seq = x.transpose(0, 1)  # [T, batch, d_model]
+        x_seq = x_emb.transpose(0, 1)  # [T, batch, d_model]
         x_encoded = self.transformer(x_seq)
         query = x_encoded[-1:]  # Last token [1, batch, d_model]
         
         # Attend to external memory
         memory = self.memory.unsqueeze(1).expand(-1, query.size(1), -1)  # [M, batch, d_model]
         attn_out, _ = self.attention_to_memory(query, memory, memory)
-        return self.output_proj(attn_out.squeeze(0))
+        return self.classifier(attn_out.squeeze(0))  # [batch, vocab_size]
 
 
 class BBPMAssociativeModel(nn.Module):
-    """BBPM-based associative recall model."""
+    """BBPM-based associative recall model with token ID keying."""
     
-    def __init__(self, d_model: int, mem_cfg: MemoryConfig):
+    def __init__(self, embedding: nn.Embedding, d_model: int, mem_cfg: MemoryConfig, vocab_size: int):
         super().__init__()
+        self.embedding = embedding
         self.mem = BBPMMemory(mem_cfg)
-        self.output_proj = nn.Linear(d_model, d_model)
+        self.classifier = nn.Linear(d_model, vocab_size)
         
-    def forward(self, x: torch.Tensor, hx_list: list[int]) -> torch.Tensor:
-        """x: [batch, T, d_model], hx_list: list of keys for last token"""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [batch, T] token IDs"""
+        # Embed tokens
+        x_emb = self.embedding(x)  # [batch, T, d_model]
+        
         # Write sequence to memory
         self.mem.reset()
         batch_size = x.shape[0]
         T = x.shape[1]
         
-        for t in range(T - 1):  # All but last (query)
-            for b in range(batch_size):
-                # Use token embedding hash as key
-                token_emb = x[b, t]
-                # Simple hash: sum of embedding (deterministic)
-                hx = int(torch.sum(token_emb * 1000).item()) % (2**64)
-                self.mem.write(hx, token_emb)
+        # Process each sequence in batch
+        for b in range(batch_size):
+            # Write (key, value) pairs: even indices are keys, odd are values
+            for t in range(0, T - 1, 2):  # Step by 2 for pairs
+                if t + 1 < T - 1:  # Ensure we have a pair
+                    key_id = int(x[b, t].item())
+                    val_id = int(x[b, t + 1].item())
+                    val_emb = x_emb[b, t + 1]
+                    
+                    # Use token ID keying: hx = mix64(u64(token_id))
+                    hx = mix64(u64(key_id))
+                    self.mem.write(hx, val_emb)
         
-        # Retrieve using query
+        # Retrieve using query (last token)
         retrieved = []
         for b in range(batch_size):
-            query_emb = x[b, -1]
-            hx = int(torch.sum(query_emb * 1000).item()) % (2**64)
+            query_id = int(x[b, -1].item())
+            # Use same keying for query
+            hx = mix64(u64(query_id))
             r = self.mem.read(hx)
             retrieved.append(r)
         
-        retrieved_tensor = torch.stack(retrieved)
-        return self.output_proj(retrieved_tensor)
+        retrieved_tensor = torch.stack(retrieved)  # [batch, d_model]
+        return self.classifier(retrieved_tensor)  # [batch, vocab_size]
 
 
 def count_parameters(model: nn.Module) -> int:
@@ -289,21 +279,28 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     for seed in seeds:
         seed_everything(seed)
         
-        # Generate train/test data
-        train_seqs, train_targets, _ = generate_batch(
-            batch_size * 10, T, vocab_size, d_model, seed, device
+        # Create shared embedding layer
+        embedding = nn.Embedding(vocab_size, d_model).to(device)
+        
+        # Generate train/test data with separate RNG
+        train_seqs, train_targets = generate_batch(
+            batch_size * 10, T, vocab_size, seed
         )
-        test_seqs, test_targets, _ = generate_batch(
-            batch_size * 5, T, vocab_size, d_model, seed + 1000, device
+        test_seqs, test_targets = generate_batch(
+            batch_size * 5, T, vocab_size, seed + 1000
         )
+        train_seqs = train_seqs.to(device)
+        train_targets = train_targets.to(device)
+        test_seqs = test_seqs.to(device)
+        test_targets = test_targets.to(device)
         
         # Model 1: Windowed Transformer
         window_size = 16
-        model1 = WindowedTransformer(d_model, num_heads, window_size).to(device)
+        model1 = WindowedTransformer(embedding, d_model, num_heads, window_size, vocab_size).to(device)
         param_count1 = count_parameters(model1)
         
         optimizer1 = optim.Adam(model1.parameters(), lr=lr)
-        criterion = nn.MSELoss()
+        criterion = nn.CrossEntropyLoss()
         
         train_losses1 = []
         test_accs1 = []
@@ -317,7 +314,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 batch_targets = train_targets[i:i+batch_size]
                 
                 optimizer1.zero_grad()
-                outputs = model1(batch_seqs)
+                outputs = model1(batch_seqs)  # [batch, vocab_size]
                 loss = criterion(outputs, batch_targets)
                 loss.backward()
                 optimizer1.step()
@@ -333,17 +330,36 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 for i in range(0, len(test_seqs), batch_size):
                     batch_seqs = test_seqs[i:i+batch_size]
                     batch_targets = test_targets[i:i+batch_size]
-                    outputs = model1(batch_seqs)
-                    # Accuracy: cosine similarity > 0.9
-                    cosines = torch.nn.functional.cosine_similarity(outputs, batch_targets, dim=1)
-                    correct += (cosines > 0.9).sum().item()
+                    outputs = model1(batch_seqs)  # [batch, vocab_size]
+                    # Accuracy: exact match (top-1)
+                    preds = outputs.argmax(dim=1)
+                    correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs1.append(correct / total)
         
         # Model 2: Transformer + External KV
-        memory_size = 1000
-        model2 = TransformerWithExternalKV(d_model, num_heads, memory_size).to(device)
+        # Adjust memory_size to match param count with BBPM
+        # Target: roughly match model1 or model3 params
+        target_params = param_count1
+        # Approximate: embedding + transformer + memory + classifier
+        # embedding: vocab_size * d_model
+        # transformer: ~2 * (4 * d_model^2 + 2 * d_model * 4*d_model) = ~24 * d_model^2
+        # memory: memory_size * d_model
+        # classifier: d_model * vocab_size
+        embedding_params = vocab_size * d_model
+        transformer_params = 24 * d_model * d_model  # Approximate
+        classifier_params = d_model * vocab_size
+        # Solve for memory_size to match target
+        memory_params_target = target_params - embedding_params - transformer_params - classifier_params
+        memory_size = max(100, int(memory_params_target / d_model))
+        
+        model2 = TransformerWithExternalKV(embedding, d_model, num_heads, memory_size, vocab_size).to(device)
         param_count2 = count_parameters(model2)
+        
+        # Check parameter count difference
+        param_diff_pct = abs(param_count2 - param_count1) / param_count1 * 100
+        if param_diff_pct > 5:
+            print(f"Warning: Model2 param count differs by {param_diff_pct:.1f}% from Model1")
         
         optimizer2 = optim.Adam(model2.parameters(), lr=lr)
         
@@ -358,7 +374,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 batch_targets = train_targets[i:i+batch_size]
                 
                 optimizer2.zero_grad()
-                outputs = model2(batch_seqs)
+                outputs = model2(batch_seqs)  # [batch, vocab_size]
                 loss = criterion(outputs, batch_targets)
                 loss.backward()
                 optimizer2.step()
@@ -373,15 +389,21 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 for i in range(0, len(test_seqs), batch_size):
                     batch_seqs = test_seqs[i:i+batch_size]
                     batch_targets = test_targets[i:i+batch_size]
-                    outputs = model2(batch_seqs)
-                    cosines = torch.nn.functional.cosine_similarity(outputs, batch_targets, dim=1)
-                    correct += (cosines > 0.9).sum().item()
+                    outputs = model2(batch_seqs)  # [batch, vocab_size]
+                    # Accuracy: exact match (top-1)
+                    preds = outputs.argmax(dim=1)
+                    correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs2.append(correct / total)
         
         # Model 3: BBPM
-        model3 = BBPMAssociativeModel(d_model, mem_cfg).to(device)
+        model3 = BBPMAssociativeModel(embedding, d_model, mem_cfg, vocab_size).to(device)
         param_count3 = count_parameters(model3)
+        
+        # Check parameter count difference
+        param_diff_pct = abs(param_count3 - param_count1) / param_count1 * 100
+        if param_diff_pct > 5:
+            print(f"Warning: Model3 param count differs by {param_diff_pct:.1f}% from Model1")
         
         optimizer3 = optim.Adam(model3.parameters(), lr=lr)
         
@@ -395,18 +417,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 batch_seqs = train_seqs[i:i+batch_size]
                 batch_targets = train_targets[i:i+batch_size]
                 
-                # Generate hx_list for this batch
-                batch_hx_list = []
-                for b in range(batch_seqs.shape[0]):
-                    seq_hx = []
-                    for t in range(batch_seqs.shape[1]):
-                        token_emb = batch_seqs[b, t]
-                        hx = int(torch.sum(token_emb * 1000).item()) % (2**64)
-                        seq_hx.append(hx)
-                    batch_hx_list.append(seq_hx)
-                
                 optimizer3.zero_grad()
-                outputs = model3(batch_seqs, batch_hx_list[0])  # Use first sequence's keys
+                outputs = model3(batch_seqs)  # [batch, vocab_size]
                 loss = criterion(outputs, batch_targets)
                 loss.backward()
                 optimizer3.step()
@@ -421,17 +433,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 for i in range(0, len(test_seqs), batch_size):
                     batch_seqs = test_seqs[i:i+batch_size]
                     batch_targets = test_targets[i:i+batch_size]
-                    batch_hx_list = []
-                    for b in range(batch_seqs.shape[0]):
-                        seq_hx = []
-                        for t in range(batch_seqs.shape[1]):
-                            token_emb = batch_seqs[b, t]
-                            hx = int(torch.sum(token_emb * 1000).item()) % (2**64)
-                            seq_hx.append(hx)
-                        batch_hx_list.append(seq_hx)
-                    outputs = model3(batch_seqs, batch_hx_list[0])
-                    cosines = torch.nn.functional.cosine_similarity(outputs, batch_targets, dim=1)
-                    correct += (cosines > 0.9).sum().item()
+                    outputs = model3(batch_seqs)  # [batch, vocab_size]
+                    # Accuracy: exact match (top-1)
+                    preds = outputs.argmax(dim=1)
+                    correct += (preds == batch_targets).sum().item()
                     total += len(batch_targets)
                 test_accs3.append(correct / total)
         
@@ -480,11 +485,13 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "param_count": mean_params,
         }
     
-    # Generate figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    # Generate figure with 3 panels
+    fig = plt.figure(figsize=(16, 5))
     
-    # Panel 1: Training curves
     epochs = list(range(num_epochs))
+    
+    # Panel 1: Training loss curves
+    ax1 = plt.subplot(1, 3, 1)
     for model_name, label in [
         ("windowed_transformer", "Windowed Transformer"),
         ("transformer_external_kv", "Transformer + External KV"),
@@ -494,12 +501,13 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         ax1.plot(epochs, losses, "o-", label=label, linewidth=2)
     
     ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Training Loss (MSE)")
-    ax1.set_title("Training Curves")
+    ax1.set_ylabel("Training Loss (CrossEntropy)")
+    ax1.set_title("Training Loss Curves")
     ax1.grid(True, alpha=0.3)
     ax1.legend()
     
     # Panel 2: Test accuracy curves
+    ax2 = plt.subplot(1, 3, 2)
     for model_name, label in [
         ("windowed_transformer", "Windowed Transformer"),
         ("transformer_external_kv", "Transformer + External KV"),
@@ -509,10 +517,38 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         ax2.plot(epochs, accs, "o-", label=label, linewidth=2)
     
     ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Test Accuracy (cosine > 0.9)")
+    ax2.set_ylabel("Test Accuracy (Exact Match)")
     ax2.set_title("Test Accuracy Curves")
     ax2.grid(True, alpha=0.3)
     ax2.legend()
+    
+    # Panel 3: Final accuracy bar chart with CI
+    ax3 = plt.subplot(1, 3, 3)
+    model_names = ["windowed_transformer", "transformer_external_kv", "bbpm"]
+    labels = ["Windowed\nTransformer", "Transformer\n+ External KV", "BBPM"]
+    final_accs = []
+    acc_lows = []
+    acc_highs = []
+    for model_name in model_names:
+        final_accs.append(summary[model_name]["final_test_acc"]["mean"])
+        acc_lows.append(summary[model_name]["final_test_acc"]["ci95_low"])
+        acc_highs.append(summary[model_name]["final_test_acc"]["ci95_high"])
+    
+    x_pos = np.arange(len(labels))
+    bars = ax3.bar(x_pos, final_accs, yerr=[np.array(final_accs) - np.array(acc_lows), 
+                                             np.array(acc_highs) - np.array(final_accs)],
+                   capsize=5, alpha=0.7)
+    ax3.set_ylabel("Final Test Accuracy")
+    ax3.set_title("Final Accuracy (with 95% CI)")
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(labels)
+    ax3.grid(True, alpha=0.3, axis='y')
+    
+    # Add param counts as text
+    for i, model_name in enumerate(model_names):
+        param_count = summary[model_name]["param_count"]
+        ax3.text(i, final_accs[i] + 0.02, f"{int(param_count/1e3)}K params",
+                ha="center", va="bottom", fontsize=8)
     
     add_footer(fig, EXP_ID)
     

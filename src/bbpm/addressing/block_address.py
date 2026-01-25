@@ -245,6 +245,29 @@ class BlockAddress:
         # Order: for h in [0..H-1], for k in [0..K-1] (matches addresses() output)
         return torch.cat(addr_groups, dim=0)
 
+    def addresses_batch(self, hx_tensor: "torch.LongTensor", device: "torch.device") -> "torch.LongTensor":
+        """Compute addresses for a batch of hashed keys.
+        
+        Args:
+            hx_tensor: Tensor of shape [T] containing uint64 hashed keys (as int64)
+            device: Target device for tensors
+            
+        Returns:
+            LongTensor of shape [T, H*K] containing global addresses for each key
+        """
+        import torch
+        
+        T = hx_tensor.shape[0]
+        addr_list = []
+        
+        for i in range(T):
+            hx = int(hx_tensor[i].item())
+            addrs = self.addresses_tensor(hx, device)
+            addr_list.append(addrs)
+        
+        # Stack to [T, H*K]
+        return torch.stack(addr_list, dim=0)
+
     def addresses_grouped(self, hx: int) -> list[list[int]]:
         """Compute addresses grouped by hash family.
 

@@ -38,44 +38,65 @@ def token_id_keying(token_id: int, seed: int) -> int:
     Returns:
         hx (uint64)
     """
-    # Deterministic hash from token_id
-    hx = mix64(u64(token_id) ^ u64(seed))
+    # Deterministic hash from token_id (no seed XOR for stability)
+    hx = mix64(u64(token_id))
     return hx
 
 
+def packbits_to_u64(bits_bool: torch.Tensor) -> int:
+    """Pack boolean tensor to uint64.
+    
+    Args:
+        bits_bool: Boolean tensor of shape [bits] where bits <= 64
+        
+    Returns:
+        Packed uint64 integer
+    """
+    bits = bits_bool.cpu().numpy().astype(np.uint64)
+    result = 0
+    for i, bit in enumerate(bits):
+        if bit:
+            result |= (1 << i)
+    return int(result)
+
+
 def frozen_projection_keying(embedding: torch.Tensor, projection: torch.Tensor, seed: int) -> int:
-    """Frozen random projection keying.
+    """Frozen random projection keying with multi-bit sign-hash.
     
     Args:
         embedding: Token embedding [d]
-        projection: Frozen projection matrix [d]
+        projection: Frozen projection matrix [bits, d] where bits=64
         seed: Random seed (unused, projection is frozen)
         
     Returns:
         hx (uint64)
     """
-    # Project to scalar
-    scalar = torch.sum(embedding * projection).item()
-    # Hash to uint64
-    hx = mix64(u64(int(scalar * 1000) % (2**64)))
+    # Project to bits: [bits] = (W @ e > 0)
+    bits_bool = (projection @ embedding > 0)  # [bits]
+    # Pack to uint64
+    packed_u64 = packbits_to_u64(bits_bool)
+    # Hash
+    hx = mix64(u64(packed_u64))
     return hx
 
 
-def trainable_projection_keying(embedding: torch.Tensor, projection: nn.Parameter, seed: int) -> int:
-    """Trainable projection keying (drifts during training).
+def trainable_projection_keying(embedding: torch.Tensor, projection: torch.Tensor, seed: int) -> int:
+    """Trainable projection keying (drifts during training) with multi-bit sign-hash.
     
     Args:
         embedding: Token embedding [d]
-        projection: Trainable projection parameter [d]
+        projection: Projection tensor [bits, d] where bits=64 (can be Parameter or Tensor)
         seed: Random seed (unused)
         
     Returns:
         hx (uint64)
     """
-    # Project to scalar
-    scalar = torch.sum(embedding * projection).item()
-    # Hash to uint64
-    hx = mix64(u64(int(scalar * 1000) % (2**64)))
+    # Project to bits: [bits] = (W @ e > 0)
+    bits_bool = (projection @ embedding > 0)  # [bits]
+    # Pack to uint64
+    packed_u64 = packbits_to_u64(bits_bool)
+    # Hash
+    hx = mix64(u64(packed_u64))
     return hx
 
 
@@ -90,8 +111,26 @@ def add_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--num_early_items",
         type=int,
-        default=10,
+        default=512,
         help="Number of early items to track",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=0.01,
+        help="Drift noise scale for embeddings",
+    )
+    parser.add_argument(
+        "--eta",
+        type=float,
+        default=1e-3,
+        help="Drift noise scale for trainable projection",
+    )
+    parser.add_argument(
+        "--reachability_threshold",
+        type=float,
+        default=0.9,
+        help="Cosine threshold for reachability success",
     )
 
 
@@ -109,6 +148,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     num_seeds = args.seeds
     num_steps = args.num_steps
     num_early_items = args.num_early_items
+    sigma = args.sigma
+    eta = args.eta
+    reachability_threshold = args.reachability_threshold
     out_dir = args.out_dir
     
     # Fixed memory configuration
@@ -141,26 +183,29 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         mem = BBPMMemory(mem_cfg)
         
         # Generate early items (written at step 0)
-        random.seed(seed)
+        # Initialize e0 ~ N(0,1) normalized
         torch.manual_seed(seed)
-        early_token_ids = list(range(num_early_items))
         early_embeddings = torch.randn(num_early_items, d, device=device)
         early_embeddings = torch.nn.functional.normalize(early_embeddings, p=2, dim=1)
         early_values = early_embeddings.clone()
+        early_token_ids = list(range(num_early_items))
         
         # Mode 1: Token-ID keying (stable)
         mem.reset()
-        token_hx_list = [token_id_keying(tid, seed) for tid in early_token_ids]
-        for hx, v in zip(token_hx_list, early_values):
+        token_hx_list_initial = [token_id_keying(tid, seed) for tid in early_token_ids]
+        for hx, v in zip(token_hx_list_initial, early_values):
             mem.write(hx, v)
         
-        # Simulate training steps (add more items, embeddings change)
+        # Simulate gradual drift: e = normalize(e + sigma * noise)
+        current_embeddings = early_embeddings.clone()
         reachability_token = []
+        key_change_rate_token = []
         for step in range(num_steps):
-            # Generate new embeddings (simulating training drift)
+            # Gradual drift: deterministic noise from (seed, step)
             torch.manual_seed(seed + step)
-            new_embeddings = torch.randn(num_early_items, d, device=device)
-            new_embeddings = torch.nn.functional.normalize(new_embeddings, p=2, dim=1)
+            noise = torch.randn(num_early_items, d, device=device)
+            current_embeddings = current_embeddings + sigma * noise
+            current_embeddings = torch.nn.functional.normalize(current_embeddings, p=2, dim=1)
             
             # Retrieve early items using token-ID keying (stable)
             retrieved = []
@@ -170,83 +215,143 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 retrieved.append(r)
             retrieved_tensor = torch.stack(retrieved)
             
-            # Compute reachability
-            cosines = [cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)]
-            mean_cosine = np.mean(cosines)
-            reachability_token.append(mean_cosine)
+            # Compute reachability (success rate)
+            cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])
+            success = (cosines >= reachability_threshold).float()
+            reachability = success.mean().item()
+            reachability_token.append(reachability)
+            
+            # Key change rate (always 0 for token-ID, keys don't change)
+            key_change_rate_token.append(0.0)
         
-        # Mode 2: Frozen projection keying
+        # Mode 2: Frozen projection keying (multi-bit sign-hash)
         mem.reset()
-        # Create frozen projection
+        # Create frozen projection W: [bits, d] where bits=64
+        bits = 64
         torch.manual_seed(seed)
-        frozen_proj = torch.randn(d, device=device)
-        frozen_proj = frozen_proj / torch.norm(frozen_proj)
+        frozen_proj = torch.randn(bits, d, device=device)
+        frozen_proj = frozen_proj / torch.norm(frozen_proj, dim=1, keepdim=True)  # Normalize each row
         
-        frozen_hx_list = [frozen_projection_keying(emb, frozen_proj, seed) for emb in early_embeddings]
-        for hx, v in zip(frozen_hx_list, early_values):
+        frozen_hx_list_initial = [frozen_projection_keying(emb, frozen_proj, seed) for emb in early_embeddings]
+        for hx, v in zip(frozen_hx_list_initial, early_values):
             mem.write(hx, v)
         
+        # Simulate gradual drift: e = normalize(e + sigma * noise)
+        current_embeddings = early_embeddings.clone()
         reachability_frozen = []
+        key_change_rate_frozen = []
+        hamming_frozen = []
         for step in range(num_steps):
-            # New embeddings
+            # Gradual drift: deterministic noise from (seed, step)
             torch.manual_seed(seed + step)
-            new_embeddings = torch.randn(num_early_items, d, device=device)
-            new_embeddings = torch.nn.functional.normalize(new_embeddings, p=2, dim=1)
+            noise = torch.randn(num_early_items, d, device=device)
+            current_embeddings = current_embeddings + sigma * noise
+            current_embeddings = torch.nn.functional.normalize(current_embeddings, p=2, dim=1)
             
-            # Retrieve using frozen projection (stable)
+            # Compute current keys
+            current_hx_list = [frozen_projection_keying(emb, frozen_proj, seed) for emb in current_embeddings]
+            
+            # Key change rate
+            key_changes = sum(1 for hx0, hx in zip(frozen_hx_list_initial, current_hx_list) if hx0 != hx)
+            key_change_rate = key_changes / num_early_items
+            key_change_rate_frozen.append(key_change_rate)
+            
+            # Hamming distance (bitcount XOR)
+            hamming_dists = []
+            for hx0, hx in zip(frozen_hx_list_initial, current_hx_list):
+                hamming = bin(hx0 ^ hx).count('1')
+                hamming_dists.append(hamming)
+            mean_hamming = np.mean(hamming_dists)
+            hamming_frozen.append(mean_hamming)
+            
+            # Retrieve using frozen projection (stable projection, but embeddings drift)
             retrieved = []
-            for emb in new_embeddings:
-                hx = frozen_projection_keying(emb, frozen_proj, seed)
+            for hx in current_hx_list:
                 r = mem.read(hx)
                 retrieved.append(r)
             retrieved_tensor = torch.stack(retrieved)
             
-            cosines = [cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)]
-            mean_cosine = np.mean(cosines)
-            reachability_frozen.append(mean_cosine)
+            # Compute reachability (success rate)
+            cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])
+            success = (cosines >= reachability_threshold).float()
+            reachability = success.mean().item()
+            reachability_frozen.append(reachability)
         
         # Mode 3: Trainable projection keying (drifts)
         mem.reset()
-        # Create trainable projection
-        trainable_proj = nn.Parameter(torch.randn(d, device=device))
-        trainable_proj.data = trainable_proj.data / torch.norm(trainable_proj.data)
+        # Create trainable projection W: [bits, d] where bits=64
+        bits = 64
+        trainable_proj = nn.Parameter(torch.randn(bits, d, device=device))
+        trainable_proj.data = trainable_proj.data / torch.norm(trainable_proj.data, dim=1, keepdim=True)
         
         initial_hx_list = [trainable_projection_keying(emb, trainable_proj, seed) for emb in early_embeddings]
         for hx, v in zip(initial_hx_list, early_values):
             mem.write(hx, v)
         
+        # Simulate gradual drift: e = normalize(e + sigma * noise), W = normalize(W + eta * noise)
+        current_embeddings = early_embeddings.clone()
+        current_proj = trainable_proj.data.clone()
         reachability_trainable = []
+        key_change_rate_trainable = []
+        hamming_trainable = []
         for step in range(num_steps):
-            # Simulate training: update projection slightly
-            with torch.no_grad():
-                noise = torch.randn(d, device=device) * 0.01
-                trainable_proj.data = trainable_proj.data + noise
-                trainable_proj.data = trainable_proj.data / torch.norm(trainable_proj.data)
-            
-            # New embeddings
+            # Drift embeddings: deterministic noise from (seed, step)
             torch.manual_seed(seed + step)
-            new_embeddings = torch.randn(num_early_items, d, device=device)
-            new_embeddings = torch.nn.functional.normalize(new_embeddings, p=2, dim=1)
+            emb_noise = torch.randn(num_early_items, d, device=device)
+            current_embeddings = current_embeddings + sigma * emb_noise
+            current_embeddings = torch.nn.functional.normalize(current_embeddings, p=2, dim=1)
+            
+            # Drift projection: W = normalize(W + eta * noise)
+            torch.manual_seed(seed + step + 10000)  # Different seed for projection noise
+            proj_noise = torch.randn(bits, d, device=device)
+            current_proj = current_proj + eta * proj_noise
+            current_proj = current_proj / torch.norm(current_proj, dim=1, keepdim=True)
+            
+            # Compute current keys with drifted projection
+            current_hx_list = []
+            for emb in current_embeddings:
+                # Use current_proj tensor directly
+                hx = trainable_projection_keying(emb, current_proj, seed)
+                current_hx_list.append(hx)
+            
+            # Key change rate
+            key_changes = sum(1 for hx0, hx in zip(initial_hx_list, current_hx_list) if hx0 != hx)
+            key_change_rate = key_changes / num_early_items
+            key_change_rate_trainable.append(key_change_rate)
+            
+            # Hamming distance
+            hamming_dists = []
+            for hx0, hx in zip(initial_hx_list, current_hx_list):
+                hamming = bin(hx0 ^ hx).count('1')
+                hamming_dists.append(hamming)
+            mean_hamming = np.mean(hamming_dists)
+            hamming_trainable.append(mean_hamming)
             
             # Retrieve using current projection (may have drifted)
             retrieved = []
-            for emb in new_embeddings:
-                hx = trainable_projection_keying(emb, trainable_proj, seed)
+            for hx in current_hx_list:
                 r = mem.read(hx)
                 retrieved.append(r)
             retrieved_tensor = torch.stack(retrieved)
             
-            cosines = [cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)]
-            mean_cosine = np.mean(cosines)
-            reachability_trainable.append(mean_cosine)
+            # Compute reachability (success rate)
+            cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])
+            success = (cosines >= reachability_threshold).float()
+            reachability = success.mean().item()
+            reachability_trainable.append(reachability)
         
         # Record trial
         raw_trials.append({
             "seed": seed,
             "steps": list(range(num_steps)),
             "token_id_reachability": reachability_token,
+            "token_id_key_change_rate": key_change_rate_token,
             "frozen_proj_reachability": reachability_frozen,
+            "frozen_proj_key_change_rate": key_change_rate_frozen,
+            "frozen_proj_hamming": hamming_frozen,
             "trainable_proj_reachability": reachability_trainable,
+            "trainable_proj_key_change_rate": key_change_rate_trainable,
+            "trainable_proj_hamming": hamming_trainable,
         })
     
     # Summarize across seeds
@@ -287,10 +392,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             }
         }
     
-    # Generate figure
-    fig, ax = plt.subplots(figsize=(10, 6))
+    # Generate figure with 3 panels
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
     
-    # Plot reachability curves for three modes
+    # Panel 1: Reachability vs step (3 modes)
     for mode, label in [
         ("token_id", "Token-ID Keying (Stable)"),
         ("frozen_proj", "Frozen Projection Keying"),
@@ -300,13 +405,48 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             means = summary[mode]["reachability"]["mean"]
             lows = summary[mode]["reachability"]["ci95_low"]
             highs = summary[mode]["reachability"]["ci95_high"]
-            plot_line_with_ci(ax, steps, means, lows, highs, label=label, linestyle="-")
+            plot_line_with_ci(ax1, steps, means, lows, highs, label=label, linestyle="-")
     
-    ax.set_xlabel("Training Step")
-    ax.set_ylabel("Reachability (Cosine Similarity)")
-    ax.set_title("Exp07: Early-Item Reachability vs Training Step")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax1.set_xlabel("Training Step")
+    ax1.set_ylabel("Reachability (Success Rate)")
+    ax1.set_title("Exp07: Early-Item Reachability vs Training Step")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # Panel 2: Key change rate vs step
+    for mode, label in [
+        ("token_id", "Token-ID Keying (Stable)"),
+        ("frozen_proj", "Frozen Projection Keying"),
+        ("trainable_proj", "Trainable Projection Keying (Drifts)"),
+    ]:
+        if mode in summary and "key_change_rate" in summary[mode]:
+            means = summary[mode]["key_change_rate"]["mean"]
+            lows = summary[mode]["key_change_rate"]["ci95_low"]
+            highs = summary[mode]["key_change_rate"]["ci95_high"]
+            plot_line_with_ci(ax2, steps, means, lows, highs, label=label, linestyle="-")
+    
+    ax2.set_xlabel("Training Step")
+    ax2.set_ylabel("Key Change Rate")
+    ax2.set_title("Key Change Rate vs Training Step")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    # Panel 3: Hamming distance vs step (for sign-hash modes)
+    for mode, label in [
+        ("frozen_proj", "Frozen Projection Keying"),
+        ("trainable_proj", "Trainable Projection Keying (Drifts)"),
+    ]:
+        if mode in summary and "hamming_distance" in summary[mode]:
+            means = summary[mode]["hamming_distance"]["mean"]
+            lows = summary[mode]["hamming_distance"]["ci95_low"]
+            highs = summary[mode]["hamming_distance"]["ci95_high"]
+            plot_line_with_ci(ax3, steps, means, lows, highs, label=label, linestyle="-")
+    
+    ax3.set_xlabel("Training Step")
+    ax3.set_ylabel("Mean Hamming Distance")
+    ax3.set_title("Mean Hamming Distance vs Training Step")
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
     
     add_footer(fig, EXP_ID)
     
@@ -322,6 +462,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "H": H,
         "num_steps": num_steps,
         "num_early_items": num_early_items,
+        "sigma": sigma,
+        "eta": eta,
+        "reachability_threshold": reachability_threshold,
         "device": str(device),
         "dtype": dtype_str,
     }

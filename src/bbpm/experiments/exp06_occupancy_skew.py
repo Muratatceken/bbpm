@@ -145,12 +145,15 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         values = torch.randn(N, d, device=device)
         values = torch.nn.functional.normalize(values, p=2, dim=1)
         
-        all_addresses_uniform = []
-        all_block_ids_uniform = []
         # Write uniform keys (batch operation)
         uniform_hx_i64 = [u64_to_i64(hx) for hx in uniform_hx_list]
         uniform_hx_tensor = torch.tensor(uniform_hx_i64, dtype=torch.long, device=device)
         mem.write_batch(uniform_hx_tensor, values)
+        
+        # Get addresses for collision analysis
+        all_addresses_uniform = []
+        all_block_ids_uniform = []
+        for hx in uniform_hx_list:
             addrs = addresser.addresses(hx)  # Global addresses
             all_addresses_uniform.extend(addrs)
             for addr in addrs:
@@ -193,6 +196,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             zipf_hx_i64 = [u64_to_i64(hx) for hx in zipf_hx_list]
             zipf_hx_tensor = torch.tensor(zipf_hx_i64, dtype=torch.long, device=device)
             mem.write_batch(zipf_hx_tensor, values)
+            
+            # Get addresses for collision analysis
+            all_addresses_zipf = []
+            all_block_ids_zipf = []
+            for hx in zipf_hx_list:
                 addrs = addresser.addresses(hx)  # Global addresses
                 all_addresses_zipf.extend(addrs)
                 for addr in addrs:
@@ -237,6 +245,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         token_id_hx_i64 = [u64_to_i64(hx) for hx in token_id_hx_list]
         token_id_hx_tensor = torch.tensor(token_id_hx_i64, dtype=torch.long, device=device)
         mem.write_batch(token_id_hx_tensor, values)
+        
+        # Get addresses for collision analysis
+        all_addresses_token = []
+        all_block_ids_token = []
+        for hx in token_id_hx_list:
             addrs = addresser.addresses(hx)  # Global addresses
             all_addresses_token.extend(addrs)
             for addr in addrs:

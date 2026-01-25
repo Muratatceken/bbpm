@@ -134,7 +134,7 @@ class WindowedTransformer(nn.Module):
         self.embedding = embedding
         self.window_size = window_size
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, num_heads, dim_feedforward=d_model * 4),
+            nn.TransformerEncoderLayer(d_model, num_heads, dim_feedforward=d_model * 4, batch_first=True),
             num_layers=2,
         )
         self.classifier = nn.Linear(d_model, vocab_size)
@@ -145,11 +145,10 @@ class WindowedTransformer(nn.Module):
         x_emb = self.embedding(x)  # [batch, T, d_model]
         # Use last window_size tokens
         x_window = x_emb[:, -self.window_size:, :]  # [batch, window_size, d_model]
-        # Transformer expects [seq_len, batch, d_model]
-        x_window = x_window.transpose(0, 1)  # [window_size, batch, d_model]
-        out = self.transformer(x_window)  # [window_size, batch, d_model]
-        # Use last token: out[-1] is [batch, d_model]
-        return self.classifier(out[-1])  # [batch, vocab_size]
+        # Transformer with batch_first=True expects [batch, seq_len, d_model]
+        out = self.transformer(x_window)  # [batch, window_size, d_model]
+        # Use last token: out[:, -1, :] is [batch, d_model]
+        return self.classifier(out[:, -1, :])  # [batch, vocab_size]
 
 
 class TransformerWithExternalKV(nn.Module):
@@ -161,25 +160,24 @@ class TransformerWithExternalKV(nn.Module):
         self.memory_size = memory_size
         self.memory = nn.Parameter(torch.randn(memory_size, d_model))
         self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, num_heads, dim_feedforward=d_model * 4),
+            nn.TransformerEncoderLayer(d_model, num_heads, dim_feedforward=d_model * 4, batch_first=True),
             num_layers=2,
         )
-        self.attention_to_memory = nn.MultiheadAttention(d_model, num_heads)
+        self.attention_to_memory = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
         self.classifier = nn.Linear(d_model, vocab_size)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: [batch, T] token IDs"""
         # Embed tokens
         x_emb = self.embedding(x)  # [batch, T, d_model]
-        # Process sequence
-        x_seq = x_emb.transpose(0, 1)  # [T, batch, d_model]
-        x_encoded = self.transformer(x_seq)
-        query = x_encoded[-1:]  # Last token [1, batch, d_model]
+        # Process sequence with batch_first=True: [batch, seq_len, d_model]
+        x_encoded = self.transformer(x_emb)  # [batch, T, d_model]
+        query = x_encoded[:, -1:, :]  # Last token [batch, 1, d_model]
         
         # Attend to external memory
-        memory = self.memory.unsqueeze(1).expand(-1, query.size(1), -1)  # [M, batch, d_model]
-        attn_out, _ = self.attention_to_memory(query, memory, memory)
-        return self.classifier(attn_out.squeeze(0))  # [batch, vocab_size]
+        memory = self.memory.unsqueeze(0).expand(query.size(0), -1, -1)  # [batch, M, d_model]
+        attn_out, _ = self.attention_to_memory(query, memory, memory)  # [batch, 1, d_model]
+        return self.classifier(attn_out.squeeze(1))  # [batch, vocab_size]
 
 
 class BBPMAssociativeModel(nn.Module):

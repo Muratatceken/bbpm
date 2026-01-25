@@ -78,12 +78,16 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     seeds = seed_loop(num_seeds)
     raw_trials = []
     
+    print(f"Running {len(seeds)} seeds, {len(N_values)} N values each...")
+    
     # Run trials
-    for seed in seeds:
+    for seed_idx, seed in enumerate(seeds):
+        print(f"  Seed {seed_idx + 1}/{num_seeds} (seed={seed})...")
         seed_everything(seed)
         mem = BBPMMemory(mem_cfg)
         
-        for N in N_values:
+        for n_idx, N in enumerate(N_values):
+            print(f"    N={N} ({n_idx + 1}/{len(N_values)})...", end=" ", flush=True)
             # Reset memory for this N
             mem.reset()
             
@@ -96,6 +100,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             values = torch.nn.functional.normalize(values, p=2, dim=1)
             
             # Write all items
+            print("writing...", end=" ", flush=True)
             for hx, v in zip(hx_list, values):
                 mem.write(hx, v)
             
@@ -104,11 +109,14 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             test_hx = hx_list[:test_n]
             test_values = values[:test_n]
             
+            print("reading...", end=" ", flush=True)
             retrieved = []
             for hx in test_hx:
                 r = mem.read(hx)
                 retrieved.append(r)
             retrieved_tensor = torch.stack(retrieved)
+            
+            print("computing metrics...", end=" ", flush=True)
             
             # Compute metrics
             cosines = []
@@ -141,8 +149,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "mse": mean_mse,
                 "occupancy": occupied_ratio,
             })
+            print("done")
     
     # Summarize across seeds for each N
+    print("Summarizing results...")
     summary = {}
     for N in N_values:
         n_trials = [t for t in raw_trials if t["N"] == N]
@@ -192,6 +202,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         }
     
     # Generate figure
+    print("Generating figure...")
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
     
     # Panel 1: Cosine similarity vs N
@@ -233,6 +244,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     add_footer(fig, EXP_ID)
     
     # Save outputs
+    print("Saving outputs...")
     metrics_path, figure_path = make_output_paths(out_dir, EXP_ID, EXP_SLUG)
     
     config_dict = {

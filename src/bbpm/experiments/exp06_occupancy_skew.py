@@ -11,6 +11,7 @@ import torch
 
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
 from bbpm.addressing.hash_mix import mix64, u64
+from bbpm.addressing.prp import u64_to_i64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.occupancy import block_occupancy
@@ -146,8 +147,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         
         all_addresses_uniform = []
         all_block_ids_uniform = []
-        for hx, v in zip(uniform_hx_list, values):
-            mem.write(hx, v)
+        # Write uniform keys (batch operation)
+        uniform_hx_i64 = [u64_to_i64(hx) for hx in uniform_hx_list]
+        uniform_hx_tensor = torch.tensor(uniform_hx_i64, dtype=torch.long, device=device)
+        mem.write_batch(uniform_hx_tensor, values)
             addrs = addresser.addresses(hx)  # Global addresses
             all_addresses_uniform.extend(addrs)
             for addr in addrs:
@@ -186,8 +189,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             
             all_addresses_zipf = []
             all_block_ids_zipf = []
-            for hx, v in zip(zipf_hx_list, values):
-                mem.write(hx, v)
+            # Write Zipf keys (batch operation)
+            zipf_hx_i64 = [u64_to_i64(hx) for hx in zipf_hx_list]
+            zipf_hx_tensor = torch.tensor(zipf_hx_i64, dtype=torch.long, device=device)
+            mem.write_batch(zipf_hx_tensor, values)
                 addrs = addresser.addresses(hx)  # Global addresses
                 all_addresses_zipf.extend(addrs)
                 for addr in addrs:
@@ -228,8 +233,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         
         all_addresses_token = []
         all_block_ids_token = []
-        for hx, v in zip(token_id_hx_list, values):
-            mem.write(hx, v)
+        # Write token-ID keys (batch operation)
+        token_id_hx_i64 = [u64_to_i64(hx) for hx in token_id_hx_list]
+        token_id_hx_tensor = torch.tensor(token_id_hx_i64, dtype=torch.long, device=device)
+        mem.write_batch(token_id_hx_tensor, values)
             addrs = addresser.addresses(hx)  # Global addresses
             all_addresses_token.extend(addrs)
             for addr in addrs:

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from bbpm.addressing.prp import u64_to_i64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
@@ -120,9 +121,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             # 1. Write needle first
             mem.write(needle_hx, needle_value)
             
-            # 2. Write 'distance' distractors AFTER needle
-            for hx, v in zip(distractor_hx_list[:distance], distractor_values[:distance]):
-                mem.write(hx, v)
+            # 2. Write 'distance' distractors AFTER needle (batch operation)
+            if distance > 0:
+                distractor_hx_batch = [u64_to_i64(hx) for hx in distractor_hx_list[:distance]]
+                distractor_hx_tensor = torch.tensor(distractor_hx_batch, dtype=torch.long, device=device)
+                mem.write_batch(distractor_hx_tensor, distractor_values[:distance])
             
             # 3. READ needle NOW (this is the measurement)
             # Compute writes so far: 1 (needle) + distance (distractors)
@@ -143,8 +146,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             # 4. Optionally write remaining distractors (not part of measurement)
             # This keeps total load fixed for comparison, but doesn't affect the measurement
             remaining_distractors = fixed_N - distance
-            for hx, v in zip(distractor_hx_list[distance:], distractor_values[distance:]):
-                mem.write(hx, v)
+            if remaining_distractors > 0:
+                remaining_hx_batch = [u64_to_i64(hx) for hx in distractor_hx_list[distance:]]
+                remaining_hx_tensor = torch.tensor(remaining_hx_batch, dtype=torch.long, device=device)
+                mem.write_batch(remaining_hx_tensor, distractor_values[distance:])
             
             # Compute final empirical lambda (after all writes, for reference)
             total_writes = (fixed_N + 1) * K * H
@@ -188,9 +193,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 # 1. Write needle first
                 mem.write(needle_hx, needle_value)
                 
-                # 2. Write 'fixed_distance' distractors AFTER needle
-                for hx, v in zip(distractor_hx_list[:fixed_distance], distractor_values[:fixed_distance]):
-                    mem.write(hx, v)
+                # 2. Write 'fixed_distance' distractors AFTER needle (batch operation)
+                if fixed_distance > 0:
+                    distractor_hx_batch = [u64_to_i64(hx) for hx in distractor_hx_list[:fixed_distance]]
+                    distractor_hx_tensor = torch.tensor(distractor_hx_batch, dtype=torch.long, device=device)
+                    mem.write_batch(distractor_hx_tensor, distractor_values[:fixed_distance])
                 
                 # 3. READ needle NOW (this is the measurement)
                 # Compute writes so far: 1 (needle) + fixed_distance (distractors)
@@ -210,8 +217,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 
                 # 4. Optionally write remaining distractors (not part of measurement)
                 remaining_distractors = N - fixed_distance
-                for hx, v in zip(distractor_hx_list[fixed_distance:], distractor_values[fixed_distance:]):
-                    mem.write(hx, v)
+                if remaining_distractors > 0:
+                    remaining_hx_batch = [u64_to_i64(hx) for hx in distractor_hx_list[fixed_distance:]]
+                    remaining_hx_tensor = torch.tensor(remaining_hx_batch, dtype=torch.long, device=device)
+                    mem.write_batch(remaining_hx_tensor, distractor_values[fixed_distance:])
                 
                 # Compute final empirical lambda (after all writes, for reference)
                 total_writes = (N + 1) * K * H

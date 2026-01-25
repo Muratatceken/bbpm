@@ -11,6 +11,7 @@ import torch
 
 from bbpm.addressing.block_address import AddressConfig, BlockAddress
 from bbpm.addressing.hash_mix import mix64, u64
+from bbpm.addressing.prp import u64_to_i64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
@@ -163,12 +164,15 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     
                     self_collision_rate = self_collisions / check_n if check_n > 0 else 0.0
                     
-                    # Write all items and track addresses for collision analysis
+                    # Write all items (batch operation) and track addresses for collision analysis
+                    hx_list_i64 = [u64_to_i64(hx) for hx in hx_list]
+                    hx_tensor = torch.tensor(hx_list_i64, dtype=torch.long, device=device)
+                    mem.write_batch(hx_tensor, values)
+                    
+                    # Get addresses for collision analysis (global addresses, not block IDs)
                     all_addresses = []
                     block_ids_list = []
-                    for hx, v in zip(hx_list, values):
-                        mem.write(hx, v)
-                        # Get addresses for collision analysis (global addresses, not block IDs)
+                    for hx in hx_list:
                         addrs = addresser.addresses(hx)
                         all_addresses.extend(addrs)
                         # Extract block IDs for occupancy analysis
@@ -189,16 +193,14 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     )
                     gini_skew = occ_analysis["gini_coefficient"]
                     
-                    # Evaluate retrieval quality
+                    # Evaluate retrieval quality (batch operation)
                     test_n = min(N, 100)
                     test_hx = hx_list[:test_n]
+                    test_hx_i64 = [u64_to_i64(hx) for hx in test_hx]
+                    test_hx_tensor = torch.tensor(test_hx_i64, dtype=torch.long, device=device)
                     test_values = values[:test_n]
                     
-                    retrieved = []
-                    for hx in test_hx:
-                        r = mem.read(hx)
-                        retrieved.append(r)
-                    retrieved_tensor = torch.stack(retrieved)
+                    retrieved_tensor = mem.read_batch(test_hx_tensor)  # [test_n, d]
                     
                     cosines = [cosine_similarity(v, r) for v, r in zip(test_values, retrieved_tensor)]
                     mean_cosine = np.mean(cosines)

@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 
 from bbpm.addressing.hash_mix import mix64, u64
+from bbpm.addressing.prp import u64_to_i64
 from bbpm.memory.interfaces import MemoryConfig
 from bbpm.memory.bbpm_memory import BBPMMemory
 from bbpm.metrics.retrieval import cosine_similarity
@@ -193,8 +194,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         # Mode 1: Token-ID keying (stable)
         mem.reset()
         token_hx_list_initial = [token_id_keying(tid, seed) for tid in early_token_ids]
-        for hx, v in zip(token_hx_list_initial, early_values):
-            mem.write(hx, v)
+        # Write initial items (batch operation)
+        token_hx_i64_initial = [u64_to_i64(hx) for hx in token_hx_list_initial]
+        token_hx_tensor_initial = torch.tensor(token_hx_i64_initial, dtype=torch.long, device=device)
+        mem.write_batch(token_hx_tensor_initial, early_values)
         
         # Simulate gradual drift: e = normalize(e + sigma * noise)
         current_embeddings = early_embeddings.clone()
@@ -207,13 +210,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             current_embeddings = current_embeddings + sigma * noise
             current_embeddings = torch.nn.functional.normalize(current_embeddings, p=2, dim=1)
             
-            # Retrieve early items using token-ID keying (stable)
-            retrieved = []
-            for tid in early_token_ids:
-                hx = token_id_keying(tid, seed)  # Same key always
-                r = mem.read(hx)
-                retrieved.append(r)
-            retrieved_tensor = torch.stack(retrieved)
+            # Retrieve early items using token-ID keying (stable, batch operation)
+            token_hx_list = [token_id_keying(tid, seed) for tid in early_token_ids]
+            token_hx_i64 = [u64_to_i64(hx) for hx in token_hx_list]
+            token_hx_tensor = torch.tensor(token_hx_i64, dtype=torch.long, device=device)
+            retrieved_tensor = mem.read_batch(token_hx_tensor)  # [num_early_items, d]
             
             # Compute reachability (success rate)
             cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])
@@ -233,8 +234,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         frozen_proj = frozen_proj / torch.norm(frozen_proj, dim=1, keepdim=True)  # Normalize each row
         
         frozen_hx_list_initial = [frozen_projection_keying(emb, frozen_proj, seed) for emb in early_embeddings]
-        for hx, v in zip(frozen_hx_list_initial, early_values):
-            mem.write(hx, v)
+        # Write initial items (batch operation)
+        frozen_hx_i64_initial = [u64_to_i64(hx) for hx in frozen_hx_list_initial]
+        frozen_hx_tensor_initial = torch.tensor(frozen_hx_i64_initial, dtype=torch.long, device=device)
+        mem.write_batch(frozen_hx_tensor_initial, early_values)
         
         # Simulate gradual drift: e = normalize(e + sigma * noise)
         current_embeddings = early_embeddings.clone()
@@ -264,12 +267,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             mean_hamming = np.mean(hamming_dists)
             hamming_frozen.append(mean_hamming)
             
-            # Retrieve using frozen projection (stable projection, but embeddings drift)
-            retrieved = []
-            for hx in current_hx_list:
-                r = mem.read(hx)
-                retrieved.append(r)
-            retrieved_tensor = torch.stack(retrieved)
+            # Retrieve using frozen projection (stable projection, but embeddings drift, batch operation)
+            frozen_hx_i64 = [u64_to_i64(hx) for hx in current_hx_list]
+            frozen_hx_tensor = torch.tensor(frozen_hx_i64, dtype=torch.long, device=device)
+            retrieved_tensor = mem.read_batch(frozen_hx_tensor)  # [num_early_items, d]
             
             # Compute reachability (success rate)
             cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])
@@ -285,8 +286,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         trainable_proj.data = trainable_proj.data / torch.norm(trainable_proj.data, dim=1, keepdim=True)
         
         initial_hx_list = [trainable_projection_keying(emb, trainable_proj, seed) for emb in early_embeddings]
-        for hx, v in zip(initial_hx_list, early_values):
-            mem.write(hx, v)
+        # Write initial items (batch operation)
+        initial_hx_i64 = [u64_to_i64(hx) for hx in initial_hx_list]
+        initial_hx_tensor = torch.tensor(initial_hx_i64, dtype=torch.long, device=device)
+        mem.write_batch(initial_hx_tensor, early_values)
         
         # Simulate gradual drift: e = normalize(e + sigma * noise), W = normalize(W + eta * noise)
         current_embeddings = early_embeddings.clone()
@@ -327,12 +330,10 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             mean_hamming = np.mean(hamming_dists)
             hamming_trainable.append(mean_hamming)
             
-            # Retrieve using current projection (may have drifted)
-            retrieved = []
-            for hx in current_hx_list:
-                r = mem.read(hx)
-                retrieved.append(r)
-            retrieved_tensor = torch.stack(retrieved)
+            # Retrieve using current projection (may have drifted, batch operation)
+            trainable_hx_i64 = [u64_to_i64(hx) for hx in current_hx_list]
+            trainable_hx_tensor = torch.tensor(trainable_hx_i64, dtype=torch.long, device=device)
+            retrieved_tensor = mem.read_batch(trainable_hx_tensor)  # [num_early_items, d]
             
             # Compute reachability (success rate)
             cosines = torch.tensor([cosine_similarity(v, r) for v, r in zip(early_values, retrieved_tensor)])

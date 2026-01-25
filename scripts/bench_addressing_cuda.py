@@ -298,13 +298,17 @@ def main():
               f"({batch_addr['ci95_low']*1000:.3f}-{batch_addr['ci95_high']*1000:.3f} ms CI95)")
         print(f"    Throughput: {batch_addr['ops_per_sec']:,.0f} keys/sec")
         
-        # Compare with scalar loop (only for smaller T to avoid timeout)
-        if T <= 10000:
+        # Compare with scalar loop (only for very small T to avoid timeout)
+        # Note: Scalar loop is extremely slow for large T, so we skip it for T > 100
+        if T <= 100:
+            print("  Computing scalar loop comparison (this may take a while)...")
             scalar_addr = benchmark_addresses_scalar_loop(addresser, hx_list, device, num_warmup, num_repeats)
             print(f"  {scalar_addr['method']:30s} {scalar_addr['mean_sec']*1000:8.3f} ms  "
                   f"({scalar_addr['ci95_low']*1000:.3f}-{scalar_addr['ci95_high']*1000:.3f} ms CI95)")
             speedup = scalar_addr['mean_sec'] / batch_addr['mean_sec']
             print(f"    Speedup: {speedup:.2f}x")
+        else:
+            print(f"  (Skipping scalar loop comparison for T={T} - too slow, use T<=100 to compare)")
         
         # Benchmark write_batch
         print("\nWrite:")
